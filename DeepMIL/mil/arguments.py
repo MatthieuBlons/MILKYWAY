@@ -314,7 +314,7 @@ def configure_training_mode(
     Record whether the current command is training or inference.
     """
     args.train = bool(train)
-    
+
     return args
 
 
@@ -567,9 +567,11 @@ def configure_classifier_layers(args: Namespace) -> Namespace:
 
 
 def validate_pooling_layers(args: Namespace) -> Namespace:
-    """
-    Validate pooling-dependent arguments and clear unused values.
-    """
+    """Validate pooling-dependent arguments and clear unused values."""
+
+    if args.model == "ibmil":
+        args.num_heads = 1
+
     if args.pooling in {"attention", "gated_attention"}:
         if args.attention_dim < 1:
             raise ValueError(
@@ -806,7 +808,7 @@ def build_parser(
     Parameters
     ----------
     train : bool, default=True
-        Include training arguments when True. 
+        Include training arguments when True.
         Include the required model checkpoint argument when False.
 
     Returns
