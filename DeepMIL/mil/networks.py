@@ -16,7 +16,49 @@ from argparse import Namespace
 class ABMIL(Module):
     """ABMIL.
 
-    Attention-based multiple-instance learning.
+    Attention-based multiple-instance learning (embedding-level).
+
+    Tiles are transformed, pooled into one slide embedding, then mapped to
+    the task outputs: `InstanceTransform` -> `PoolingFunction` ->
+    `PredictionHead`.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Network configuration. Only the attributes listed in `ARG_NAMES`
+        are read:
+
+        feature_dim
+            Size of the input tile embeddings.
+
+        instance_dim
+            Size of the tile embeddings after `InstanceTransform`.
+
+        instance_transf
+            Instance transform strategy (see `InstanceTransform`).
+
+        pooling
+            Pooling mode (see `PoolingFunction`).
+
+        top_k
+            Number of tiles kept by the `top_k` pooling.
+
+        attention_dim
+            Hidden size of the attention scoring layer.
+
+        num_heads
+            Number of heads of the attention pooling and of the transformer
+            instance transforms.
+
+        width_fe
+            Hidden layer sizes of the `PredictionHead`.
+
+        dropout
+            Dropout probability of the attention scoring layer. The instance
+            transform and prediction head use a fixed dropout of 0.1.
+
+    output_dim : int
+        Number of outputs (classes, regression targets, or 1 for survival).
     """
 
     ARG_NAMES = {
@@ -73,9 +115,19 @@ class ABMIL(Module):
         )
 
     def _get_pooled_dim(self) -> int:
+        """
+        Size of the slide embedding returned by the pooling layer.
+
+        Returns
+        -------
+        int
+            `instance_dim * num_heads` for the attention-based pooling modes,
+            `instance_dim` otherwise.
+        """
         if self.pooling in {
             "attention",
             "gated_attention",
+            "top_k",
         }:
             return self.instance_dim * self.num_heads
 
@@ -86,7 +138,23 @@ class ABMIL(Module):
         x: Tensor,
         coords: Tensor | None = None,
     ) -> Tensor:
+        """
+        Predict slide-level outputs from a bag of tiles.
 
+        Parameters
+        ----------
+        x : torch.Tensor
+            Tile embeddings with shape [B, N, feature_dim].
+
+        coords : torch.Tensor, optional
+            Normalized tile coordinates with shape [B, N, 2]. Required by
+            the `roformer` and `rposbias` instance transforms.
+
+        Returns
+        -------
+        torch.Tensor
+            Raw task predictions with shape [B, output_dim].
+        """
         x = self.instance_transform(
             x,
             coords=coords,
@@ -101,6 +169,48 @@ class IBMIL(Module):
     """IBMIL.
 
     Instance-based multiple-instance learning.
+
+    Each tile is transformed and mapped to its own task outputs, which are
+    then pooled into a slide prediction: `InstanceTransform` ->
+    `PredictionHead` -> `PoolingFunction`.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Network configuration. Only the attributes listed in `ARG_NAMES`
+        are read:
+
+        feature_dim
+            Size of the input tile embeddings.
+
+        instance_dim
+            Size of the tile embeddings after `InstanceTransform`.
+
+        instance_transf
+            Instance transform strategy (see `InstanceTransform`).
+
+        pooling
+            Pooling mode (see `PoolingFunction`).
+
+        top_k
+            Number of tiles kept by the `top_k` pooling.
+
+        attention_dim
+            Hidden size of the attention scoring layer.
+
+        num_heads
+            Number of heads of the attention pooling and of the transformer
+            instance transforms.
+
+        width_fe
+            Hidden layer sizes of the `PredictionHead`.
+
+        dropout
+            Dropout probability of the attention scoring layer. The instance
+            transform and prediction head use a fixed dropout of 0.1.
+
+    output_dim : int
+        Number of outputs (classes, regression targets, or 1 for survival).
     """
 
     ARG_NAMES = {
@@ -156,7 +266,23 @@ class IBMIL(Module):
         x: Tensor,
         coords: Tensor | None = None,
     ) -> Tensor:
+        """
+        Predict slide-level outputs from a bag of tiles.
 
+        Parameters
+        ----------
+        x : torch.Tensor
+            Tile embeddings with shape [B, N, feature_dim].
+
+        coords : torch.Tensor, optional
+            Normalized tile coordinates with shape [B, N, 2]. Required by
+            the `roformer` and `rposbias` instance transforms.
+
+        Returns
+        -------
+        torch.Tensor
+            Raw task predictions with shape [B, output_dim].
+        """
         x = self.instance_transform(
             x,
             coords=coords,
@@ -176,6 +302,25 @@ MIL_NETWORKS = {
 class CustomMIL(Module):
     """
     Unified interface around the available MIL architectures.
+
+    Picks the network class from `MIL_NETWORKS[args.model]` and passes it
+    only the arguments listed in its `ARG_NAMES`. Input shapes are checked
+    before the forward pass.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Runtime configuration. Must contain `model` and every attribute in
+        the `ARG_NAMES` of the selected network.
+
+    output_dim : int
+        Number of outputs (classes, regression targets, or 1 for survival).
+
+    Raises
+    ------
+    ValueError
+        If `args.model` is not a key of `MIL_NETWORKS`, or if an argument
+        required by the network is missing.
     """
 
     def __init__(
@@ -207,6 +352,24 @@ class CustomMIL(Module):
         self,
         args: Namespace,
     ) -> Namespace:
+        """
+        Keep only the arguments required by the selected network.
+
+        Parameters
+        ----------
+        args : argparse.Namespace
+            Full runtime configuration.
+
+        Returns
+        -------
+        argparse.Namespace
+            Namespace restricted to the network `ARG_NAMES`.
+
+        Raises
+        ------
+        ValueError
+            If one of the `ARG_NAMES` is missing from `args`.
+        """
         network_cls = MIL_NETWORKS[self.name]
 
         missing = [name for name in network_cls.ARG_NAMES if not hasattr(args, name)]
@@ -226,6 +389,8 @@ class CustomMIL(Module):
         coords: Tensor | None = None,
     ) -> Tensor:
         """
+        Check input shapes and run the selected network.
+
         Parameters
         ----------
         x : torch.Tensor
@@ -238,6 +403,11 @@ class CustomMIL(Module):
         -------
         torch.Tensor
             Raw task predictions with shape [B, output_dim].
+
+        Raises
+        ------
+        ValueError
+            If `x` is not 3D, or if `coords` does not match [B, N, 2].
         """
         if x.ndim != 3:
             raise ValueError(
@@ -266,6 +436,17 @@ class CustomMIL(Module):
         depth: int = 4,
         verbose: int = 1,
     ) -> None:
+        """
+        Print a torchinfo summary of the network.
+
+        Parameters
+        ----------
+        depth : int, default=4
+            Depth of nested modules to display.
+
+        verbose : int, default=1
+            torchinfo verbosity level.
+        """
         summary(
             self.network,
             depth=depth,

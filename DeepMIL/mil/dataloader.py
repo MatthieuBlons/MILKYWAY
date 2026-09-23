@@ -77,61 +77,13 @@ from torch.utils.data import (
     SubsetRandomSampler,
 )
 
+from utils import read_table
+
 SUPPORTED_TASKS = {
     "survival",
     "classification",
     "regression",
 }
-
-
-def read_table(path: str | Path, **kwargs: Any) -> pd.DataFrame:
-    """
-    Read a tabular file with pandas.
-
-    Parameters
-    ----------
-    path : str or pathlib.Path
-        Path to the table.
-
-    **kwargs
-        Arguments passed to the selected pandas reader.
-
-    Returns
-    -------
-    pandas.DataFrame
-        Loaded table.
-
-    Raises
-    ------
-    ValueError
-        If the file extension is unsupported.
-    """
-    path = Path(path)
-    extension = path.suffix.lower()
-
-    readers = {
-        ".csv": lambda p: pd.read_csv(p, **kwargs),
-        ".tsv": lambda p: pd.read_csv(p, sep="\t", **kwargs),
-        ".txt": lambda p: pd.read_csv(p, sep="\t", **kwargs),
-        ".xlsx": lambda p: pd.read_excel(p, **kwargs),
-        ".xls": lambda p: pd.read_excel(p, **kwargs),
-        ".parquet": lambda p: pd.read_parquet(p, **kwargs),
-        ".feather": lambda p: pd.read_feather(p, **kwargs),
-        ".pkl": lambda p: pd.read_pickle(p, **kwargs),
-        ".pickle": lambda p: pd.read_pickle(p, **kwargs),
-    }
-
-    try:
-        reader = readers[extension]
-    except KeyError as exc:
-        supported = ", ".join(sorted(readers))
-        raise ValueError(
-            f"Unsupported table format '{extension}'. "
-            f"Supported formats: {supported}."
-        ) from exc
-
-    return reader(path)
-
 
 class WSIEncoded(Dataset):
     """
@@ -191,7 +143,7 @@ class WSIEncoded(Dataset):
             strategy to use for tile sampling in the WSI
 
         n_tiles
-            number of tiles to sample from the
+            number of tiles to sample from each WSI
 
         For survival:
             time_name and event_name.
@@ -230,9 +182,16 @@ class WSIEncoded(Dataset):
     file_format : str, default="h5"
         Extension of the wsi files.
 
-    verbose : bool, defaut=False
+    verbose : bool, default=False
         If enable, display info
 
+    Raises
+    ------
+    ValueError
+        If `args.task` is not in `SUPPORTED_TASKS`.
+
+    FileNotFoundError
+        If `args.enc_dir` does not exist.
     """
 
     def __init__(
@@ -287,6 +246,7 @@ class WSIEncoded(Dataset):
         ) = self._make_db()
 
     def __len__(self):
+        """Return the number of cases in the dataset."""
         return len(self.files)
 
     # Slide level encoding does not make sense in the MIL framework
@@ -395,10 +355,43 @@ class WSIEncoded(Dataset):
         return sample
 
     def _get_embeddings(self, path):
+        """
+        Read the tile embeddings of one case.
+
+        Parameters
+        ----------
+        path : pathlib.Path
+            HDF5 file of the case.
+
+        Returns
+        -------
+        numpy.ndarray
+            Tile embeddings with shape (N, F).
+        """
         _, feats = read_h5_features(path)
         return feats
 
     def _get_coords(self, path):
+        """
+        Read the tile coordinates of one case, normalised by the slide size.
+
+        Parameters
+        ----------
+        path : pathlib.Path
+            HDF5 file of the case.
+
+        Returns
+        -------
+        numpy.ndarray
+            Tile (x, y) coordinates divided by the `level_size` attribute,
+            with shape (N, 2). If `level_size` is missing, raw coordinates
+            are returned.
+
+        Raises
+        ------
+        ValueError
+            If `level_size` does not have shape (2,).
+        """
         attrs, coords = read_h5_coords(path)
 
         coords = coords[:, :2]
@@ -1021,7 +1014,7 @@ class DatasetHandler:
             Fraction assigned to validation. Defaults to 0.2.
 
         seed
-            Random seed. Defaults to 0.
+            Random seed. Defaults to 29.
 
         pin_memory
             Enable pinned host memory. Defaults to False.
@@ -1035,8 +1028,21 @@ class DatasetHandler:
         sample_wr_whole_label
             Select the legacy weighted-sampling strategy.
 
+        constant_size
+            If True, every bag has the same number of tiles and batches are
+            stacked. Otherwise `collate_variable_size` is used. Defaults to
+            True.
+
     predict : bool, default=False
         If True, construct one dataset containing all available cases.
+
+    verbose : bool, default=True
+        If True, log dataset and split information.
+
+    Raises
+    ------
+    ValueError
+        If `val_fraction` is not strictly between zero and one.
     """
 
     def __init__(
@@ -1438,6 +1444,14 @@ class WeightedRandomSamplerFromList(Sampler[int]):
 
     generator : torch.Generator, optional
         Generator used for reproducible sampling.
+
+    Raises
+    ------
+    ValueError
+        If `weights` and `indices` differ in length or are empty, if
+        `num_samples` is not positive, if the weights are not finite and
+        non-negative with a positive sum, or if `num_samples` exceeds the
+        number of indices without replacement.
     """
 
     def __init__(
@@ -1487,6 +1501,7 @@ class WeightedRandomSamplerFromList(Sampler[int]):
         self.generator = generator
 
     def __iter__(self) -> Iterator[int]:
+        """Draw `num_samples` dataset indices according to `weights`."""
         sampled_positions = (
             torch.multinomial(
                 self.weights,
@@ -1524,7 +1539,9 @@ class SequentialSubsetSampler(Sampler[int]):
         self.indices = [int(index) for index in indices]
 
     def __iter__(self) -> Iterator[int]:
+        """Yield the stored indices in their original order."""
         return iter(self.indices)
 
     def __len__(self) -> int:
+        """Return the number of stored indices."""
         return len(self.indices)

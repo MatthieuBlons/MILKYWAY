@@ -36,6 +36,11 @@ class CoxPartialLikelihoodLoss(Module):
     The Cox loss depends on the composition of the risk set. Computing it
     independently on small minibatches gives only a minibatch approximation
     of the full-cohort partial likelihood.
+
+    Parameters
+    ----------
+    reduction : {"mean", "sum"}, default="mean"
+        Reduction applied over the events of the batch.
     """
 
     def __init__(
@@ -113,6 +118,10 @@ class NLLSurvLoss(Module):
     ----------
     alpha : float, optional
         Optional weighting of uncensored observations. Default is 0.0.
+
+    reduction : {"mean", "sum"}, optional
+        Reduction applied over the batch. Default is "mean".
+
     eps : float, optional
         Numerical stability constant. Default is 1e-7.
     """

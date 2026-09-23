@@ -95,6 +95,11 @@ class DeepMIL(BaseModel):
     with_data : bool, default=False
         Construct training and validation data loaders during model
         initialization.
+
+    Raises
+    ------
+    ValueError
+        If `args.task` is not in `SUPPORTED_TASKS`.
     """
 
     def __init__(

@@ -28,17 +28,14 @@ from predict import predict_batch
 
 
 def extract_test_repeat(path: str | Path):
-    """extract_test_repeat."""
+    """Extract test and repeat identifier from model directory."""
     path = Path(path)
     test, repeat = [int(s) for s in path.stem.split("_") if s.isdigit()]
     return {"test": test, "repeat": repeat}
 
 
 def assert_identity(i1, i2):
-    """assert_identity.
-
-    asserts that all indices are in the same sequence in the res list.
-    """
+    """Asserts that all indices are in the same sequence in the res list."""
     assert list(i1) == list(
         i2
     ), "the sequence of images are different between several models"
@@ -48,10 +45,7 @@ def assert_identity(i1, i2):
 def copy_best_to_root(
     path: str | Path, param: list[tuple[int, int]] | tuple[int, int]
 ) -> dict[str, Any]:
-    """copy_best_to_root.
-
-    Copy the best models for every fold
-    """
+    """Copy the best models for every fold"""
     events_dir = Path(path) / "model_best_events"
     os.makedirs(events_dir, exist_ok=True)
 
@@ -75,10 +69,7 @@ def copy_best_to_root(
 
 
 def store_all(path: str | Path, param: list[tuple[int, int]] | tuple[int, int]) -> Path:
-    """store_all.
-
-    Copy all best models to storage
-    """
+    """Copy all best models to storage"""
     store_dir = Path(path) / "store"
     os.makedirs(store_dir, exist_ok=True)
 
@@ -97,10 +88,8 @@ def select_best_repeat(
     metric_mode: str = "min",
     n_best: int | None = None,
 ):
-    """select_best_repeat.
-
-    Selects the models
-    that yeild the best validation results = single run.
+    """
+    Selects models that yeild the best validation results = single run.
 
     Parameters
     ----------
@@ -137,8 +126,6 @@ def select_best_repeat(
 
 def mean_dataframe(df):
     """
-    mean_dataframe.
-
     Computes mean metrics for a set of model.
     for a given config c and a given test set t, computes
     1/r sum(metrics) over the repetitions.
@@ -170,9 +157,7 @@ def mean_dataframe(df):
 def ensemble_regression(
     results: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """
-    Ensemble regression predictions using arithmetic averaging.
-    """
+    """Ensemble regression predictions using arithmetic averaging."""
     reference_target = np.asarray(results[0]["target"])
 
     for result in results[1:]:
@@ -205,9 +190,7 @@ def ensemble_regression(
 def ensemble_classification(
     results: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """
-    Ensemble classification predictions by averaging probabilities.
-    """
+    """Ensemble classification predictions by averaging probabilities."""
     reference_target = np.asarray(results[0]["target"])
 
     for result in results[1:]:

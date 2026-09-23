@@ -18,7 +18,9 @@ def predict(
     device: str = "cpu",
     ext="h5",
 ):
-    """predict.
+    """
+    Load a trained model and make a prediction on a single wsi if 'enc_path' is provided
+    or on a batch of wsi if both 'enc_dir' or 'wsi_list' are provided
     
     """
     model = load_model(model_path, device)
@@ -47,8 +49,6 @@ def predict_batch(
     mcdo_passes: int = 1,
 ) -> dict[str, Any]:
     """
-    predict_batch.
-
     Generate task-specific predictions for one batch with optional MCDO.
 
     MCDO aggregation is performed in the natural prediction space:

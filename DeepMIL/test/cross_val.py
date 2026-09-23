@@ -38,9 +38,9 @@ from dtime.trackers import timetracker
 
 import pandas as pd
 
-from DeepMiL.mil.arguments import load_yaml_config
-from DeepMiL.mil.train import main as train_single_run
-from DeepMiL.mil.test import (
+from mil.arguments import load_yaml_config
+from mil.train import main as train_single_run
+from mil.test import (
     mean_dataframe,
     select_best_repeat,
     copy_best_to_root,
@@ -49,8 +49,8 @@ from DeepMiL.mil.test import (
     ensemble_results,
     results_to_dataframe,
 )
-from DeepMiL.mil.utils import load_model
-from DeepMiL.mil.dataloader import DatasetHandler
+from mil.utils import load_model
+from mil.dataloader import DatasetHandler
 
 warnings.filterwarnings("ignore")
 

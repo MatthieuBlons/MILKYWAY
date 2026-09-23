@@ -252,9 +252,7 @@ def update_early_stopping(
 def save_checkpoint_without_validation(
     model: DeepMIL,
 ) -> None:
-    """
-    Save the latest checkpoint when no validation set is used.
-    """
+    """Save the latest checkpoint when no validation set is used."""
     checkpoint_path = Path(model.args.job_dir) / "model.pt.tar"
 
     torch.save(
@@ -268,9 +266,7 @@ def format_epoch_summary(
     validation_metrics: dict[str, float] | None,
     best_epoch: int | None,
 ) -> dict[str, str]:
-    """
-    Build compact progress-bar information for the current epoch.
-    """
+    """Build compact progress-bar information for the current epoch."""
     summary = {
         "train_loss": f"{model.mean_train_loss:.4f}",
     }

@@ -28,7 +28,7 @@ import yaml
 from pathlib import Path
 
 
-from DeepMiL.mil.dataloader import SUPPORTED_TASKS
+from mil.dataloader import SUPPORTED_TASKS
 
 TASK_CRITERIA = {
     "survival": {
@@ -158,7 +158,7 @@ def validate_config_keys(
     Parameters
     ----------
     parser : argparse.ArgumentParser
-        Complete ProteONET argument parser.
+        Complete argument parser.
 
     config : dict
         Parsed YAML configuration.
@@ -314,6 +314,7 @@ def configure_training_mode(
     Record whether the current command is training or inference.
     """
     args.train = bool(train)
+    
     return args
 
 
@@ -566,18 +567,53 @@ def configure_classifier_layers(args: Namespace) -> Namespace:
 
 
 def validate_pooling_layers(args: Namespace) -> Namespace:
-    """ """
-    return args
+    """
+    Validate pooling-dependent arguments and clear unused values.
+    """
+    if args.pooling in {"attention", "gated_attention"}:
+        if args.attention_dim < 1:
+            raise ValueError(
+                f"`attention_dim` must be at least 1 with pooling: {args.pooling}."
+            )
+        if args.num_heads < 1:
+            raise ValueError(
+                f"`num_heads` must be at least 1 with pooling: {args.pooling}."
+            )
+        return args
+
+    if args.pooling == "top_k":
+        if args.attention_dim < 1:
+            raise ValueError(
+                f"`attention_dim` must be at least 1 with pooling: {args.pooling}."
+            )
+        if args.num_heads < 1:
+            raise ValueError(
+                f"`num_heads` must be at least 1 with pooling: {args.pooling}."
+            )
+        if args.top_k < 1:
+            raise ValueError(
+                f"`top_k` must be at least 1 with pooling: {args.pooling}."
+            )
+        return args
+
+    if args.pooling in {"mean", "max"}:
+        args.attention_dim = None
+        args.num_heads = None
+        args.top_k = None
+        return args
 
 
 def configure_encoder_dim(args):
-    """Fetch the right encorder output dimension"""
+    """
+    Fetch the right encorder output dimension
+    """
     args.encoder_dim = ENCODER_DIM[args.encoder]
     return args
 
 
 def configure_input_size(args):
-    """Ensure feature dimensions are consistent.
+    """
+    Ensure feature dimensions are consistent.
 
     encoder_dim
         original HDF5 embedding dimensionality
@@ -588,7 +624,6 @@ def configure_input_size(args):
     instance_dim
         representation dimension after MIL instance transformation
     """
-
     if args.feature_dim == 0:
         args.feature_dim = args.encoder_dim
 
@@ -605,7 +640,9 @@ def configure_input_size(args):
 
 
 def configure_sampling_strat(args):
-    """Define whether sampling produces constant-size batches."""
+    """
+    Define whether sampling produces constant-size batches.
+    """
     if args.n_tiles == 0:
         args.sampling_strat = "all"
 
@@ -769,8 +806,8 @@ def build_parser(
     Parameters
     ----------
     train : bool, default=True
-        Include training arguments when True. Include the required model
-        checkpoint argument when False.
+        Include training arguments when True. 
+        Include the required model checkpoint argument when False.
 
     Returns
     -------

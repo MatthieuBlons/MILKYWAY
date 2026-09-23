@@ -157,7 +157,6 @@ def register_exit_handlers(model: BaseModel) -> None:
     """
     Register graceful handlers for interruption and termination signals.
     """
-
     def handle_exit(
         signum: int,
         frame,
@@ -188,6 +187,9 @@ class BaseModel(ABC):
     ----------
     args
         Runtime and model configuration namespace.
+
+    verbose : bool, default=False
+        Currently unused.
 
     Attributes
     ----------
@@ -325,30 +327,36 @@ def writes_tensorboard_metrics(writer, to_write, epoch):
 
 class EarlyStopping:
     """
-    Track a validation quantity and save latest and best checkpoints.
+    Track a validation metric and save latest and best (wrt the metric) checkpoints.
 
     Parameters
     ----------
     patience : int
         Number of consecutive non-improving epochs allowed.
 
-    minimum_epochs : int
+    minimum_epochs : int, optional
         Minimum number of epochs before stopping is permitted.
 
-    mode : {"min", "max"}
+    mode : {"min", "max"}, default="min"
         Whether lower or higher monitored values are considered better.
 
-    checkpoint_path : str or pathlib.Path
-        Path used to save the latest checkpoint.
+    checkpoint_path : str or pathlib.Path, default="model.pt.tar"
+        Path used to save the latest checkpoint. 
+        The best checkpoint is saved next to it with a `best_` prefix.
 
-    minimum_improvement : float
+    minimum_improvement : float, default=0.0
         Minimum change required to qualify as an improvement.
+
+    Raises
+    ------
+    ValueError
+        If `mode` is not "min" or "max".
     """
 
     def __init__(
         self,
         patience: int,
-        minimum_epochs: int | None = None,
+        minimum_epochs: int = 1,
         mode: str = "min",
         checkpoint_path: str | Path = "model.pt.tar",
         minimum_improvement: float = 0.0,
