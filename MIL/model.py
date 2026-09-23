@@ -42,10 +42,10 @@ from torch.optim.lr_scheduler import (
     LinearLR,
 )
 
-from dataloader import DatasetHandler, SUPPORTED_TASKS
-from networks import CustomMIL
-from losses import CoxPartialLikelihoodLoss
-from base_model import BaseModel, EarlyStopping
+from MIL.dataloader import DatasetHandler, SUPPORTED_TASKS
+from MIL.networks import CustomMIL
+from MIL.losses import CoxPartialLikelihoodLoss
+from MIL.base_model import BaseModel, EarlyStopping
 
 
 class DeepMIL(BaseModel):

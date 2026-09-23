@@ -8,7 +8,7 @@ from torch.nn import (
 )
 from torchinfo import summary
 from torch import Tensor
-from custom_layers import InstanceTransform, PoolingFunction, PredictionHead
+from MIL.custom_layers import InstanceTransform, PoolingFunction, PredictionHead
 
 from argparse import Namespace
 

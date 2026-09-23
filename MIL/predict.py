@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 from typing import Any
-from utils import load_model, prep_wsi, nan_like
+from MIL.utils import load_model, prep_wsi, nan_like
 
 
 @torch.inference_mode()

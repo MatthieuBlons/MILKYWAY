@@ -77,7 +77,7 @@ from torch.utils.data import (
     SubsetRandomSampler,
 )
 
-from utils import read_table
+from MIL.io import read_table
 
 SUPPORTED_TASKS = {
     "survival",

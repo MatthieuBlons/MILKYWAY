@@ -28,7 +28,7 @@ import yaml
 from pathlib import Path
 
 
-from mil.dataloader import SUPPORTED_TASKS
+from MIL.dataloader import SUPPORTED_TASKS
 
 TASK_CRITERIA = {
     "survival": {

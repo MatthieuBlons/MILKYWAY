@@ -16,9 +16,9 @@ import torch
 import wandb
 from tqdm.auto import tqdm
 
-from arguments import get_arguments
-from model import DeepMIL
-from base_model import (
+from MIL.arguments import get_arguments
+from MIL.model import DeepMIL
+from MIL.base_model import (
     configure_logging,
     initialize_logging_backends,
     get_current_learning_rates,

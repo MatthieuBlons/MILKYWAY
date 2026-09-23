@@ -24,7 +24,7 @@ from DeepMiL.mil.utils import (
     assert_same_case_order,
     enable_mc_dropout,
 )
-from predict import predict_batch
+from MIL.predict import predict_batch
 
 
 def extract_test_repeat(path: str | Path):

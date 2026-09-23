@@ -7,10 +7,9 @@ from contextlib import contextmanager
 import numpy as np
 import torch
 
-import pandas as pd
 
 from slide.utils import read_h5_features, read_h5_coords
-from model import DeepMIL
+from MIL.model import DeepMIL
 
 import numpy as np
 
@@ -23,98 +22,12 @@ from sklearn.metrics import (
 )
 
 
-def read_table(path: str | Path, **kwargs: Any) -> pd.DataFrame:
-    """
-    Read a tabular file with pandas.
-
-    Parameters
-    ----------
-    path : str or pathlib.Path
-        Path to the table.
-
-    **kwargs
-        Arguments passed to the selected pandas reader.
-
-    Returns
-    -------
-    pandas.DataFrame
-        Loaded table.
-
-    Raises
-    ------
-    ValueError
-        If the file extension is unsupported.
-    """
-    path = Path(path)
-    extension = path.suffix.lower()
-
-    readers = {
-        ".csv": lambda p: pd.read_csv(p, **kwargs),
-        ".tsv": lambda p: pd.read_csv(p, sep="\t", **kwargs),
-        ".txt": lambda p: pd.read_csv(p, sep="\t", **kwargs),
-        ".xlsx": lambda p: pd.read_excel(p, **kwargs),
-        ".xls": lambda p: pd.read_excel(p, **kwargs),
-        ".parquet": lambda p: pd.read_parquet(p, **kwargs),
-        ".feather": lambda p: pd.read_feather(p, **kwargs),
-        ".pkl": lambda p: pd.read_pickle(p, **kwargs),
-        ".pickle": lambda p: pd.read_pickle(p, **kwargs),
-    }
-
-    try:
-        reader = readers[extension]
-    except KeyError as exc:
-        supported = ", ".join(sorted(readers))
-        raise ValueError(
-            f"Unsupported table format '{extension}'. "
-            f"Supported formats: {supported}."
-        ) from exc
-
-    return reader(path)
-
-
-def parse_file_name(file: str | Path) -> tuple[Path, str, str]:
-    """
-    Split a file path into its parent directory, stem, and extension.
-
-    Parameters
-    ----------
-    file : str or pathlib.Path
-        Input file path.
-
-    Returns
-    -------
-    parent : pathlib.Path
-        Parent directory.
-
-    stem : str
-        File name without its extension.
-
-    extension : str
-        File extension, including the leading period.
-    """
-    path = Path(file)
-    return path.parent, path.stem, path.suffix
-
-
 def to_numpy(value: Any) -> np.ndarray:
     """Convert a tensor or array-like object to a NumPy array."""
     if isinstance(value, torch.Tensor):
         return value.detach().cpu().numpy()
 
     return np.asarray(value)
-
-
-def extend_case_ids(
-    case_ids: list[str],
-    batch_case_ids: Any,
-) -> None:
-    """Append case identifiers returned by a collated batch."""
-    if isinstance(batch_case_ids, str):
-        case_ids.append(batch_case_ids)
-        return
-
-    case_ids.extend(str(case_id) for case_id in batch_case_ids)
-
 
 def nan_like(
     array: np.ndarray,
@@ -126,6 +39,16 @@ def nan_like(
         dtype=float,
     )
 
+def extend_case_ids(
+    case_ids: list[str],
+    batch_case_ids: Any,
+) -> None:
+    """Append case identifiers returned by a collated batch."""
+    if isinstance(batch_case_ids, str):
+        case_ids.append(batch_case_ids)
+        return
+
+    case_ids.extend(str(case_id) for case_id in batch_case_ids)
 
 @contextmanager
 def enable_mc_dropout(
@@ -162,7 +85,7 @@ def prep_wsi(path: str | Path, args) -> dict[str, Any]:
     feats = np.ascontiguousarray(feats, dtype=np.float32)
     ttensor = torch.from_numpy(feats)  # get all the tiles
 
-    coords = np.ascontiguousarray(coords, dtype=np.float32)
+    coords = np.ascontiguousarray(coords_array, dtype=np.float32)
     ctensor = torch.from_numpy(coords)
 
     sample: dict[str, Any] = {
@@ -199,6 +122,7 @@ def load_model(
 
     model = DeepMIL(
         args=args,
+        label_encoder=checkpoint.get("label_encoder"),
         with_data=with_data,
     )
 
