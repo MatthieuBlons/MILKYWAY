@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.ipynb_checkpoints/
+
+# Editor
+.vscode/
+CLAUDE.md
+
+# Experiment outputs
+wandb/
+runs/
+lightning_logs/
+*.pt
+*.pth
+*.ckpt
+
+# Data
+*.h5
+*.hdf5
+*.ndpi
+*.svs
+*.csv
+*.xlsx
+*.npy
+*.npz
