@@ -16,7 +16,7 @@ import numpy as np
 from scipy.stats import rankdata
 from torch.utils.data import DataLoader
 
-from DeepMiL.mil.utils import (
+from MIL.utils import (
     to_numpy,
     extend_case_ids,
     assert_same_array,

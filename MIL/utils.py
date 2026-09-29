@@ -29,6 +29,7 @@ def to_numpy(value: Any) -> np.ndarray:
 
     return np.asarray(value)
 
+
 def nan_like(
     array: np.ndarray,
 ) -> np.ndarray:
@@ -38,6 +39,7 @@ def nan_like(
         np.nan,
         dtype=float,
     )
+
 
 def extend_case_ids(
     case_ids: list[str],
@@ -49,6 +51,7 @@ def extend_case_ids(
         return
 
     case_ids.extend(str(case_id) for case_id in batch_case_ids)
+
 
 @contextmanager
 def enable_mc_dropout(
@@ -335,11 +338,10 @@ def roc_curve(
             ax=ax,
             plot_chance_level=(t == tests - 1),
         )
-
-    interp_tpr = np.interp(mean_fpr, viz.fpr, viz.tpr)
-    interp_tpr[0] = 0.0
-    tprs.append(interp_tpr)
-    aucs.append(viz.roc_auc)
+        interp_tpr = np.interp(mean_fpr, viz.fpr, viz.tpr)
+        interp_tpr[0] = 0.0
+        tprs.append(interp_tpr)
+        aucs.append(viz.roc_auc)
 
     # Mean over test
     mean_tpr = np.mean(tprs, axis=0)
