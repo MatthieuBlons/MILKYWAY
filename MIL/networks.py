@@ -111,7 +111,7 @@ class ABMIL(Module):
             input_dim=pooled_dim,
             hidden_dims=args.width_fe,
             output_dim=self.output_dim,
-            dropout=0.1,
+            dropout=args.dropout,
         )
 
     def _get_pooled_dim(self) -> int:
@@ -249,7 +249,7 @@ class IBMIL(Module):
             input_dim=self.instance_dim,
             hidden_dims=args.width_fe,
             output_dim=self.output_dim,
-            dropout=0.1,
+            dropout=args.dropout,
         )
 
         self.pooling_layer = PoolingFunction(

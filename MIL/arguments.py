@@ -1250,7 +1250,7 @@ def build_parser(
         "--dropout",
         type=float,
         default=0.4,
-        help="Dropout probability in the prediction head.",
+        help="Dropout probability in the prediction head and attention mechanism.",
     )
 
     # Resolved by configure_output_dimension().
