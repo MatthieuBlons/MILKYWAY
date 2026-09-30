@@ -5,9 +5,9 @@ The script orchestrates repeated cross-validation experiments by invoking
 the single-run training entry point once for every fold and repetition.
 
 Testing is done on the exclued fold with the best models if validation is
-used. 
+used.
 
-Ensembling of models can be invocted. 
+Ensembling of models can be invocted.
 
 Each run receives:
 
@@ -114,6 +114,12 @@ def build_job_parser() -> ArgumentParser:
         "--log",
         action="store_true",
         help="Enable W&B and TensorBoard logging.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Seeding.",
     )
 
     # Cross-validation
@@ -386,6 +392,12 @@ def build_training_arguments(
     list[str]
         Argument list passed to the single-run training entry point.
     """
+
+    if args.seed is None:
+        training_seed = fold * args.n_folds + repetition
+    else:
+        training_seed = args.seed
+
     return [
         "--config",
         str(args.config),
@@ -403,6 +415,8 @@ def build_training_arguments(
         str(args.n_folds),
         "--test_fold",
         str(fold),
+        "--seed",
+        str(training_seed),
         "--write_config",
     ]
 
@@ -613,7 +627,7 @@ def test_cross_validation(
                 result=model_results,
             )
             model_tag.update(model_metrics)
-            
+
             fold_results.append(model_results)
             test_results.append(model_results)
             test_metrics.append(model_tag)
