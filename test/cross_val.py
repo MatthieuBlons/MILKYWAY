@@ -34,7 +34,7 @@ from pathlib import Path
 import torch
 from tqdm.auto import tqdm
 
-from dtime.trackers import timetracker
+from utils import timetracker, configure_logging
 
 import pandas as pd
 
@@ -56,24 +56,6 @@ warnings.filterwarnings("ignore")
 
 
 LOGGER = logging.getLogger(__name__)
-
-
-def configure_logging(verbose: bool = False) -> None:
-    """
-    Configure console logging.
-
-    Parameters
-    ----------
-    verbose : bool, default=False
-        Use informational logging when enabled and warning-level logging
-        otherwise.
-    """
-    logging.basicConfig(
-        level=logging.INFO if verbose else logging.WARNING,
-        format="%(asctime)s | %(levelname)-8s | %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-        force=True,
-    )
 
 
 def build_job_parser() -> ArgumentParser:
@@ -178,7 +160,7 @@ def build_job_parser() -> ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--device_id",
+        "--gpu_id",
         type=int,
         default=None,
         help="CUDA device index used with --gpu.",
@@ -257,23 +239,28 @@ def resolve_device(args: Namespace) -> str:
         Resolved PyTorch device string.
     """
     if args.device is not None:
-        return args.device
+        if "cuda" in args.device:
+            if not torch.cuda.is_available():
+                LOGGER.warning("CUDA was requested but is unavailable; using CPU.")
+                return "cpu"
+        else:
+            return args.device
 
     if args.gpu:
         if not torch.cuda.is_available():
             LOGGER.warning("CUDA was requested but is unavailable; using CPU.")
             return "cpu"
 
-        if args.device_id is None:
+        if args.gpu_id is None:
             return "cuda"
 
-        if args.device_id >= torch.cuda.device_count():
+        if args.gpu_id >= torch.cuda.device_count():
             raise ValueError(
-                f"CUDA device {args.device_id} was requested, but only "
+                f"CUDA device {args.gpu_id} was requested, but only "
                 f"{torch.cuda.device_count()} device(s) are available."
             )
 
-        return f"cuda:{args.device_id}"
+        return f"cuda:{args.gpu_id}"
 
     if torch.cuda.is_available():
         return "cuda"
@@ -394,7 +381,7 @@ def build_training_arguments(
     """
 
     if args.seed is None:
-        training_seed = fold * args.n_folds + repetition
+        training_seed = fold * args.n_repeats + repetition
     else:
         training_seed = args.seed
 
