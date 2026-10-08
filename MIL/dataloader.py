@@ -85,6 +85,7 @@ SUPPORTED_TASKS = {
     "regression",
 }
 
+
 class WSIEncoded(Dataset):
     """
     Implements a Dataset for encoded WSI.
@@ -165,6 +166,11 @@ class WSIEncoded(Dataset):
         stratif_name
             Stratification column. Defaults to stratif.
 
+        confounding_name
+            Confounding columns (e.g. treatment) whose combinations define
+            the strata of the stratified Cox loss. Not used for the
+            train-validation split. Defaults to None.
+
         encode_labels
             Encode non-numeric classification labels with LabelEncoder.
             Defaults to False.
@@ -242,6 +248,7 @@ class WSIEncoded(Dataset):
             self.files,
             self.target_dict,
             self.stratif_dict,
+            self.confounding_dict,
             self.label_encoder,
         ) = self._make_db()
 
@@ -294,6 +301,12 @@ class WSIEncoded(Dataset):
 
             target
                 Float tensor with shape (n_targets,).
+
+            Always contains, after the target:
+
+            confounding
+                Scalar long tensor, the confounding stratum index (0 when
+                no `confounding_name` is set).
         """
         path = self.files[idx]
 
@@ -351,6 +364,11 @@ class WSIEncoded(Dataset):
             sample["target"] = torch.from_numpy(self.target_dict[path]).to(
                 dtype=torch.float32
             )
+
+        sample["confounding"] = torch.tensor(
+            self.confounding_dict[path],
+            dtype=torch.float32,
+        )
 
         return sample
 
@@ -460,6 +478,7 @@ class WSIEncoded(Dataset):
         list[Path],
         dict[Path, Any],
         dict[Path, Any],
+        dict[Path, np.int64],
         LabelEncoder | None,
     ]:
         """
@@ -476,6 +495,10 @@ class WSIEncoded(Dataset):
         stratif_dict : dict
             Mapping from file path to train-validation stratification label.
 
+        confounding_dict : dict
+            Mapping from file path to confounding stratum index. All cases
+            are in stratum 0 when no `confounding_name` is set.
+
         label_encoder : sklearn.preprocessing.LabelEncoder or None
             Classification label encoder, when applicable.
 
@@ -489,6 +512,7 @@ class WSIEncoded(Dataset):
         files: list[Path] = []
         target_dict: dict[Path, Any] = {}
         stratif_dict: dict[Path, Any] = {}
+        confounding_dict: dict[Path, Any] = {}
 
         for row in table.itertuples(index=False):
             row_dict = row._asdict()
@@ -520,9 +544,12 @@ class WSIEncoded(Dataset):
                     [row_dict[column] for column in self.target_columns],
                     dtype=np.float32,
                 )
-
+            
             files.append(path)
             target_dict[path] = target
+
+            # Without confounding, every case shares stratum 0.
+            confounding_dict[path] = np.int64(row_dict.get("confounding", 0))
 
             if "stratif" in row_dict:
                 stratif_dict[path] = row_dict["stratif"]
@@ -541,7 +568,7 @@ class WSIEncoded(Dataset):
             len(files),
         )
 
-        return files, target_dict, stratif_dict, label_encoder
+        return files, target_dict, stratif_dict, confounding_dict, label_encoder
 
     def _transform_target(
         self,
@@ -638,9 +665,72 @@ class WSIEncoded(Dataset):
         else:
             table = self._transform_regression_target(table)
 
+        table = self._transform_confounding_var(table)
+
         self.target_table = table
 
         return table, label_encoder
+
+    def _transform_confounding_var(
+        self,
+        table: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """
+        Encode the confounding columns as one integer stratum index.
+
+        Each combination of the `confounding_name` columns becomes one
+        stratum, used by the stratified Cox loss. Strata are coded on the
+        whole target table, before fold filtering, so that every partition
+        shares the same coding. Cases with a missing confounding value are
+        dropped.
+
+        This is unrelated to `stratif_name`, which only drives the
+        train-validation split.
+
+        Parameters
+        ----------
+        table : pandas.DataFrame
+            Target table containing the confounding columns.
+
+        Returns
+        -------
+        pandas.DataFrame
+            Table with an int64 `confounding` column.
+        """
+        confounding_name = getattr(self.args, "confounding_name", None)
+
+        if not confounding_name:
+            return table
+
+        if isinstance(confounding_name, str):
+            confounding_name = [confounding_name]
+
+        self._require_columns(table, confounding_name)
+
+        n_cases = len(table)
+        table = table.dropna(subset=confounding_name).copy()
+
+        if len(table) < n_cases:
+            self.logger.warning(
+                "Dropped %d cases with a missing confounding value in %s.",
+                n_cases - len(table),
+                confounding_name,
+            )
+
+        labels = table[confounding_name].astype(str).agg("_".join, axis=1)
+        categories = pd.Categorical(labels)
+
+        table["confounding"] = categories.codes.astype(np.int64)
+        self.confounding_classes_ = categories.categories.tolist()
+
+        self.logger.info(
+            "Confounding %s | strata=%d | mapping=%s",
+            confounding_name,
+            len(self.confounding_classes_),
+            {label: code for code, label in enumerate(self.confounding_classes_)},
+        )
+
+        return table
 
     def _transform_survival_target(
         self,
@@ -1174,7 +1264,7 @@ class DatasetHandler:
                         dataset=self.dataset_val,
                         batch_size=self.args.eval_batch_size,
                         sampler=self.val_sampler,
-                        collate_fn=collate_fn,
+                        collate_fn=collate_variable_size,
                         drop_last=False,
                         **common_kwargs,
                     )

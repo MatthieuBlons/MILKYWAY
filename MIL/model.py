@@ -44,9 +44,12 @@ from torch.optim.lr_scheduler import (
 
 from MIL.dataloader import DatasetHandler, SUPPORTED_TASKS
 from MIL.networks import CustomMIL
-from MIL.losses import CoxPartialLikelihoodLoss
+from MIL.losses import (
+    CoxPartialLikelihoodLoss,
+    StratifiedCoxPartialLikelihoodLoss,
+)
 from MIL.base_model import BaseModel, EarlyStopping
-
+from MIL.stratified_survival_metrics import stratified_concordance_index
 
 class DeepMIL(BaseModel):
     """
@@ -302,7 +305,7 @@ class DeepMIL(BaseModel):
         Supported combinations
         ----------------------
         survival
-            cox
+            cox, or stratified_cox (strata from `confounding_name`)
 
         classification
             cross_entropy, nll (if logsoftmax ends network)
@@ -313,9 +316,13 @@ class DeepMIL(BaseModel):
         criterion_name = self.args.criterion.lower()
 
         if self.task == "survival":
+            if criterion_name == "stratified_cox":
+                return StratifiedCoxPartialLikelihoodLoss().to(self.device)
+
             if criterion_name != "cox":
                 raise ValueError(
-                    "Survival analysis currently requires " "`criterion='cox'`."
+                    "Survival analysis requires `criterion` in "
+                    "['cox', 'stratified_cox']."
                 )
 
             return CoxPartialLikelihoodLoss().to(self.device)
@@ -503,6 +510,14 @@ class DeepMIL(BaseModel):
         Compute the task-specific training or validation loss.
         """
         if self.task == "survival":
+            if isinstance(self.criterion, StratifiedCoxPartialLikelihoodLoss):
+                return self.criterion(
+                    outputs,
+                    batch["time"],
+                    batch["event"],
+                    batch["confounding"],
+                )
+
             return self.criterion(
                 outputs,
                 batch["time"],
@@ -566,14 +581,14 @@ class DeepMIL(BaseModel):
 
     def validate_batch(
         self,
-        batch: dict[str, Any],  # forced to size 1
+        batch: dict[str, Any],
     ) -> float:
         """
         Evaluate one validation case and store its output and targets.
         """
         batch = self.move_batch_to_device(batch)
 
-        outputs = self.forward_without_gradients(batch["tiles"], batch["coords"])
+        outputs = self.forward_batch_without_gradients(batch)
 
         loss = self.compute_task_loss(
             outputs,
@@ -602,6 +617,7 @@ class DeepMIL(BaseModel):
         if self.task == "survival":
             self.validation_results["times"].append(batch["time"].detach().cpu())
             self.validation_results["events"].append(batch["event"].detach().cpu())
+            self.validation_results["confounding"].append(batch["confounding"].detach().cpu())
         else:
             self.validation_results["targets"].append(batch["target"].detach().cpu())
 
@@ -633,10 +649,16 @@ class DeepMIL(BaseModel):
                 dim=0,
             ).numpy()
 
+            stratas = torch.cat(
+                self.validation_results["confounding"],
+                dim=0,
+            ).numpy()
+
             validation_metrics = self.compute_survival_metrics(
                 risk_scores=outputs,
                 times=times,
                 events=events,
+                stratas=stratas,
             )
 
         else:
@@ -682,6 +704,7 @@ class DeepMIL(BaseModel):
                 {
                     "times": [],
                     "events": [],
+                    "confounding": [],
                 }
             )
         else:
@@ -865,6 +888,7 @@ class DeepMIL(BaseModel):
         risk_scores: np.ndarray,
         times: np.ndarray,
         events: np.ndarray,
+        stratas: np.ndarray,
     ) -> dict[str, float]:
         """
         Compute Harrell's concordance index for right-censored outcomes.
@@ -876,25 +900,24 @@ class DeepMIL(BaseModel):
         risk_scores = np.asarray(risk_scores).reshape(-1)
         times = np.asarray(times).reshape(-1)
         events = np.asarray(events).reshape(-1).astype(bool)
+        stratas = np.asarray(stratas).reshape(-1)
 
         (
             concordance_index,
-            concordant,
-            discordant,
-            tied_risk,
-            tied_time,
-        ) = concordance_index_censored(
-            event_indicator=events,
-            event_time=times,
-            estimate=risk_scores,
+            counts,
+        ) = stratified_concordance_index(
+            time=times,
+            event=events,
+            risk_score=risk_scores,
+            strata=stratas,
         )
 
         return {
             "concordance_index": float(concordance_index),
-            "concordant_pairs": int(concordant),
-            "discordant_pairs": int(discordant),
-            "tied_risk_pairs": int(tied_risk),
-            "tied_time_pairs": int(tied_time),
+            "concordant_pairs": int(counts["concordant"]),
+            "discordant_pairs": int(counts["discordant"]),
+            "tied_risk_pairs": int(counts["tied_risk"]),
+            "tied_time_pairs": int(counts["tied_time"]),
         }
 
     def update_best_metrics(

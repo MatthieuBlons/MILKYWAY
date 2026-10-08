@@ -23,6 +23,66 @@ from torch.nn import (
     Module,
 )
 
+def reduce_loss(
+    loss: Tensor,
+    reduction: str,
+) -> Tensor:
+    """
+    Apply a "mean" or "sum" reduction to a vector of losses.
+
+    Raises
+    ------
+    ValueError
+        If `reduction` is not "mean" or "sum".
+    """
+    if reduction == "mean":
+        return loss.mean()
+    elif reduction == "sum":
+        return loss.sum()
+    else:
+        raise ValueError(
+            f"Invalid reduction type: {reduction}. Must be 'mean' or 'sum'."
+        )
+
+def cox_log_likelihood_terms(
+    risk_scores: Tensor,
+    times: Tensor,
+    events: Tensor,
+) -> Tensor:
+    """
+    Compute the Cox partial log-likelihood term of each event.
+
+    Parameters
+    ----------
+    risk_scores : torch.Tensor
+        Predicted log-risk scores with shape (B,).
+
+    times : torch.Tensor
+        Observed survival or follow-up times with shape (B,).
+
+    events : torch.Tensor
+        Boolean event indicators with shape (B,).
+
+    Returns
+    -------
+    torch.Tensor
+        One log-likelihood term per event, with shape (n_events,).
+    """
+    order = torch.argsort(
+        times,
+        descending=True,
+    )
+
+    ordered_risk = risk_scores[order]
+    ordered_events = events[order]
+
+    log_cumulative_risk = torch.logcumsumexp(
+        ordered_risk,
+        dim=0,
+    )
+
+    return (ordered_risk - log_cumulative_risk)[ordered_events]
+
 
 class CoxPartialLikelihoodLoss(Module):
     """CoxPartialLikelihoodLoss.
@@ -84,30 +144,119 @@ class CoxPartialLikelihoodLoss(Module):
             # Maintain a differentiable zero when a batch contains no events.
             return risk_scores.sum() * 0.0
 
-        order = torch.argsort(
+        loss = cox_log_likelihood_terms(
+            risk_scores,
             times,
-            descending=True,
+            events,
         )
 
-        ordered_risk = risk_scores[order]
-        ordered_events = events[order]
+        return reduce_loss(
+            -loss,
+            self.reduction,
+        )
 
-        log_cumulative_risk = torch.logcumsumexp(
-            ordered_risk,
+
+class StratifiedCoxPartialLikelihoodLoss(Module):
+    """
+    Negative stratified Cox partial log-likelihood.
+
+    Patients are split into strata sharing the same confounding value
+    (for example the same treatment arm). Each stratum has its own risk set
+    and baseline hazard, while the risk scores share one network. The
+    log-likelihood is the sum of the per-stratum Cox log-likelihoods.
+
+    This implementation uses the Breslow approximation for tied event times.
+
+    Notes
+    -----
+    A patient only contributes when its stratum also contains other
+    patients of the batch. Small batches with many strata give few
+    comparisons: use large batches or few strata.
+
+    Parameters
+    ----------
+    reduction : {"mean", "sum"}, default="mean"
+        Reduction applied over the events of the batch, all strata pooled.
+    """
+
+    def __init__(
+        self,
+        reduction: str = "mean",
+    ):
+        super().__init__()
+
+        self.reduction = reduction
+
+    def forward(
+        self,
+        risk_scores: Tensor,
+        times: Tensor,
+        events: Tensor,
+        strata: Tensor,
+    ) -> Tensor:
+        """
+        Compute the negative stratified partial log-likelihood.
+
+        Parameters
+        ----------
+        risk_scores : torch.Tensor
+            Predicted log-risk scores with shape (B,) or (B, 1).
+
+        times : torch.Tensor
+            Observed survival or follow-up times with shape (B,).
+
+        events : torch.Tensor
+            Event indicators with shape (B,).
+
+        strata : torch.Tensor
+            Integer stratum index of each patient with shape (B,).
+
+        Returns
+        -------
+        torch.Tensor
+            Scalar loss.
+        """
+        risk_scores = risk_scores.reshape(-1)
+        times = times.reshape(-1)
+        events = events.reshape(-1).bool()
+        strata = strata.reshape(-1)
+
+        if strata.shape[0] != risk_scores.shape[0]:
+            raise ValueError(
+                f"`strata` has {strata.shape[0]} values but the batch has "
+                f"{risk_scores.shape[0]} risk scores."
+            )
+
+        if not events.any():
+            # Maintain a differentiable zero when a batch contains no events.
+            return risk_scores.sum() * 0.0
+
+        terms = []
+
+        for stratum in torch.unique(strata):
+            mask = strata == stratum
+
+            if not events[mask].any():
+                continue
+
+            terms.append(
+                cox_log_likelihood_terms(
+                    risk_scores[mask],
+                    times[mask],
+                    events[mask],
+                )
+            )
+
+        loss = torch.cat(
+            terms,
             dim=0,
         )
 
-        loss = (ordered_risk - log_cumulative_risk)[ordered_events]
+        return reduce_loss(
+            -loss,
+            self.reduction,
+        )
 
-        # Apply reduction
-        if self.reduction == "mean":
-            return -loss.mean()
-        elif self.reduction == "sum":
-            return -loss.sum()
-        else:
-            raise ValueError(
-                f"Invalid reduction type: {self.reduction}. Must be 'mean' or 'sum'."
-            )
 
 
 class NLLSurvLoss(Module):
@@ -222,11 +371,8 @@ class NLLSurvLoss(Module):
         loss = uncensored_loss + (1 - self.alpha) * censored_loss
 
         # Apply reduction
-        if self.reduction == "mean":
-            return loss.mean()
-        elif self.reduction == "sum":
-            return loss.sum()
-        else:
-            raise ValueError(
-                f"Invalid reduction type: {self.reduction}. Must be 'mean' or 'sum'."
-            )
+        return reduce_loss(
+            loss,
+            self.reduction,
+        )
+

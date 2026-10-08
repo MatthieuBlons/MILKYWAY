@@ -33,6 +33,7 @@ from MIL.dataloader import SUPPORTED_TASKS
 TASK_CRITERIA = {
     "survival": {
         "cox",
+        "stratified_cox",
     },
     "classification": {
         "cross_entropy",
@@ -305,6 +306,19 @@ def normalize_target_names(args: Namespace) -> Namespace:
 
     return args
 
+def normalize_confounding_names(args: Namespace) -> Namespace:
+    """
+    Normalize confounding_name into a list when it is provided.
+    """
+    if args.confounding_name is None:
+        return args
+
+    if isinstance(args.confounding_name, str):
+        args.confounding_name = [args.confounding_name]
+    else:
+        args.confounding_name = list(args.confounding_name)
+
+    return args
 
 def configure_training_mode(
     args: Namespace,
@@ -389,7 +403,7 @@ def configure_output_dimension(args: Namespace) -> Namespace:
         One output per class.
     """
     if args.task == "survival":
-        if args.criterion == "cox":
+        if args.criterion in {"cox", "stratified_cox"}:
             args.output_dim = 1
 
         elif args.criterion == "nllsurv":
@@ -419,9 +433,17 @@ def configure_output_dimension(args: Namespace) -> Namespace:
 def configure_task_criterion(args: Namespace) -> Namespace:
     """
     Resolve and validate the loss function for the selected task.
+
+    For survival, `stratified_cox` is selected by default when
+    `confounding_name` is set, and it requires `confounding_name`.
     """
+    confounding_name = getattr(args, "confounding_name", None)
+
     if args.criterion is None:
-        args.criterion = DEFAULT_CRITERIA[args.task]
+        if args.task == "survival" and confounding_name:
+            args.criterion = "stratified_cox"
+        else:
+            args.criterion = DEFAULT_CRITERIA[args.task]
 
     valid_criteria = TASK_CRITERIA[args.task]
 
@@ -430,6 +452,17 @@ def configure_task_criterion(args: Namespace) -> Namespace:
             f"Criterion '{args.criterion}' is incompatible with "
             f"task='{args.task}'. Expected one of "
             f"{sorted(valid_criteria)}."
+        )
+
+    if args.criterion == "stratified_cox" and not confounding_name:
+        raise ValueError(
+            "`confounding_name` is required when criterion='stratified_cox'."
+        )
+
+    if confounding_name and args.criterion != "stratified_cox":
+        raise ValueError(
+            "`confounding_name` is only used by criterion='stratified_cox', "
+            f"received criterion='{args.criterion}'."
         )
 
     return args
@@ -550,12 +583,12 @@ def configure_optimizer(args: Namespace) -> Namespace:
     return args
 
 
-def configure_classifier_layers(args: Namespace) -> Namespace:
+def configure_hidden_layers(args: Namespace) -> Namespace:
     """
     Normalize the prediction-head hidden-layer configuration.
 
     width_fe is stored as a list containing one width per hidden layer.
-    The classifier depth is inferred from that list.
+    The mlp depth is inferred from that list.
     """
     if args.width_fe is None:
         args.width_fe = []
@@ -732,14 +765,11 @@ def validate_data_loading(args: Namespace) -> Namespace:
     if args.batch_size < 1:
         raise ValueError("`batch_size` must be at least 1.")
 
-    if args.criterion == "cox" and args.batch_size < 2:
+    if args.criterion in {"cox", "stratified_cox"} and args.batch_size < 2:
         raise ValueError("Cox loss requires a batch containing multiple patients.")
 
     if args.eval_batch_size < 1:
         raise ValueError("`eval_batch_size` must be at least 1.")
-
-    if args.criterion == "cox" and args.batch_size < 2:
-        raise ValueError("Cox loss requires a batch containing multiple patients.")
 
     if args.num_workers < 0:
         raise ValueError("`num_workers` cannot be negative.")
@@ -910,6 +940,16 @@ def build_parser(
         type=str,
         default=None,
         help="Event-indicator column for survival analysis.",
+    )
+    parser.add_argument(
+        "--confounding_name",
+        type=str,
+        nargs="+",
+        default=None,
+        help=(
+            "Confounding column(s), e.g. treatment, defining the strata of "
+            "the stratified Cox loss. Unrelated to stratif_name."
+        ),
     )
     parser.add_argument(
         "--n_classes",
@@ -1337,7 +1377,7 @@ def get_arguments(
             train=train,
         )
         args = normalize_target_names(args)
-
+        args = normalize_confounding_names(args)
         args = configure_training_mode(
             args,
             train=train,
@@ -1352,7 +1392,7 @@ def get_arguments(
         args = configure_lr_scheduler(args)
         args = configure_optimizer(args)
 
-        args = configure_classifier_layers(args)
+        args = configure_hidden_layers(args)
         args = validate_pooling_layers(args)
         args = configure_encoder_dim(args)
         args = configure_input_size(args)
