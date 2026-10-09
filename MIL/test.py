@@ -347,6 +347,7 @@ def compute_test_metrics(
             risk_scores=result["risk_score"],
             times=result["time"],
             events=result["event"],
+            stratas=result["strata"],
         )
 
     if model.task == "classification":
@@ -400,12 +401,14 @@ def test(
         MCDO variability.
     """
     case_ids: list[str] = []
+    stratas: list[np.ndarray] = []
     mcdo_variability: list[np.ndarray] = []
 
     if model.task == "survival":
         risk_scores: list[np.ndarray] = []
         times: list[np.ndarray] = []
         events: list[np.ndarray] = []
+        
 
     elif model.task == "classification":
         probabilities: list[np.ndarray] = []
@@ -435,6 +438,8 @@ def test(
                 batch_result["case_id"],
             )
 
+            stratas.append(np.asarray(batch_result["strata"]))
+
             mcdo_variability.append(np.asarray(batch_result["mcdo_std"]))
 
             if model.task == "survival":
@@ -453,6 +458,7 @@ def test(
 
     result: dict[str, Any] = {
         "case_id": case_ids,
+        "strata": stratas,
         "mcdo_std": np.concatenate(
             mcdo_variability,
             axis=0,
@@ -546,7 +552,7 @@ def results_to_dataframe(
     for result in results:
         case_ids = result["case_id"]
         n_cases = len(case_ids)
-
+        stratas = result["strata"]
         test_fold = result.get("test")
         repeat = result.get("repeat")
         n_models = result.get("n_models")
@@ -564,6 +570,7 @@ def results_to_dataframe(
             for index, case_id in enumerate(case_ids):
                 row = {
                     "case_id": case_id,
+                    "strata": stratas[index],
                     "test": test_fold,
                     "time": times[index],
                     "event": events[index],
@@ -606,6 +613,7 @@ def results_to_dataframe(
             for index, case_id in enumerate(case_ids):
                 row = {
                     "case_id": case_id,
+                    "strata": stratas[index],
                     "test": test_fold,
                     "target": targets[index],
                     "target_class": true_classes[index],
@@ -672,6 +680,7 @@ def results_to_dataframe(
             for index, case_id in enumerate(case_ids):
                 row = {
                     "case_id": case_id,
+                    "strata": stratas[index],
                     "test": test_fold,
                 }
 

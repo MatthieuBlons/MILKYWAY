@@ -725,6 +725,7 @@ class DeepMIL(BaseModel):
 
         result: dict[str, Any] = {
             "case_id": batch["case_id"],
+            "strata": batch["confounding"],
         }
 
         if self.task == "survival":
