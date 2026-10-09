@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 from typing import Any
-from MIL.utils import load_model, prep_wsi, nan_like
+from MIL.utils import load_model, prep_wsi, nan_like, to_numpy
 
 
 @torch.inference_mode()
@@ -61,13 +61,16 @@ def predict_batch(
 
     if mcdo_passes == 1:
         prediction = model.predict_batch(batch)
+        strata = to_numpy(prediction["strata"]).reshape(-1)
 
         if model.task == "survival":
             risk_score = np.asarray(prediction["risk_score"]).reshape(-1)
 
             return {
                 "case_id": prediction["case_id"],
+                "strata": strata,
                 "risk_score": risk_score,
+                "mcdo_risk_scores": nan_like(risk_score)[..., None],
                 "mcdo_std": nan_like(risk_score),
             }
 
@@ -77,8 +80,10 @@ def predict_batch(
 
             result = {
                 "case_id": prediction["case_id"],
+                "strata": strata,
                 "proba": probabilities,
                 "prediction": predicted_indices,
+                "mcdo_probas": nan_like(probabilities)[..., None],
                 "mcdo_std": nan_like(probabilities),
             }
 
@@ -96,44 +101,53 @@ def predict_batch(
 
             return {
                 "case_id": prediction["case_id"],
+                "strata": strata,
                 "prediction": predictions,
+                "mcdo_predictions": nan_like(predictions)[..., None],
                 "mcdo_std": nan_like(predictions),
             }
 
         raise ValueError(f"Unsupported task: {model.task}")
 
+    pass_predictions = [model.predict_batch(batch) for _ in range(mcdo_passes)]
+    strata = to_numpy(pass_predictions[0]["strata"]).reshape(-1)
+
     if model.task == "survival":
         risk_scores = np.stack(
             [
-                np.asarray(model.predict_batch(batch)["risk_score"]).reshape(-1)
-                for _ in range(mcdo_passes)
+                np.asarray(prediction["risk_score"]).reshape(-1)
+                for prediction in pass_predictions
             ],
-            axis=0,
+            axis=-1,
         )
 
         return {
             "case_id": batch["case_id"],
-            "risk_score": risk_scores.mean(axis=0),
-            "mcdo_std": risk_scores.std(axis=0),
+            "strata": strata,
+            "risk_score": risk_scores.mean(axis=-1),
+            "mcdo_risk_scores": risk_scores,
+            "mcdo_std": risk_scores.std(axis=-1),
         }
 
     if model.task == "classification":
         probabilities = np.stack(
             [
-                np.asarray(model.predict_batch(batch)["proba"])
-                for _ in range(mcdo_passes)
+                np.asarray(prediction["proba"])
+                for prediction in pass_predictions
             ],
-            axis=0,
+            axis=-1,
         )
 
-        mean_probabilities = probabilities.mean(axis=0)
+        mean_probabilities = probabilities.mean(axis=-1)
         predicted_indices = mean_probabilities.argmax(axis=1)
 
         result = {
             "case_id": batch["case_id"],
+            "strata": strata,
             "proba": mean_probabilities,
             "prediction": predicted_indices,
-            "mcdo_std": probabilities.std(axis=0),
+            "mcdo_probas": probabilities,
+            "mcdo_std": probabilities.std(axis=-1),
         }
 
         if model.label_encoder is not None:
@@ -148,16 +162,18 @@ def predict_batch(
     if model.task == "regression":
         predictions = np.stack(
             [
-                np.asarray(model.predict_batch(batch)["prediction"])
-                for _ in range(mcdo_passes)
+                np.asarray(prediction["prediction"])
+                for prediction in pass_predictions
             ],
-            axis=0,
+            axis=-1,
         )
 
         return {
             "case_id": batch["case_id"],
-            "prediction": predictions.mean(axis=0),
-            "mcdo_std": predictions.std(axis=0),
+            "strata": strata,
+            "prediction": predictions.mean(axis=-1),
+            "mcdo_predictions": predictions,
+            "mcdo_std": predictions.std(axis=-1),
         }
 
     raise ValueError(f"Unsupported task: {model.task}")

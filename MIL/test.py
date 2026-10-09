@@ -1,7 +1,7 @@
 """
-Test ProteONET.
+Test DeepMIL.
 
-The script contains functions to Test ProteONET for classification, regression, or survival
+The script contains functions to Test DeepMIL for classification, regression, or survival
 analysis using the task-specific behavior implemented by the model class.
 """
 
@@ -179,6 +179,7 @@ def ensemble_regression(
 
     return {
         "case_id": list(results[0]["case_id"]),
+        "strata": np.asarray(results[0]["strata"]),
         "target": reference_target,
         "prediction": predictions.mean(axis=0),
         "ensemble_std": predictions.std(axis=0),
@@ -217,6 +218,7 @@ def ensemble_classification(
 
     ensemble_result: dict[str, Any] = {
         "case_id": list(results[0]["case_id"]),
+        "strata": np.asarray(results[0]["strata"]),
         "target": reference_target,
         "proba": ensemble_proba,
         "prediction": predicted_indices,
@@ -287,6 +289,7 @@ def ensemble_survival(
 
     return {
         "case_id": list(results[0]["case_id"]),
+        "strata": np.asarray(results[0]["strata"]),
         "time": reference_time,
         "event": reference_event,
         "risk_score": ranked_risks.mean(axis=0),
@@ -387,7 +390,7 @@ def test(
     Parameters
     ----------
     model
-        ProteONET model exposing ``task`` and ``predict_batch``.
+        DeepMIL model exposing ``task`` and ``predict_batch``.
     dataloader
         Test dataloader yielding dictionaries containing ``image``,
         ``case_id`` and task-specific targets.
@@ -408,16 +411,19 @@ def test(
         risk_scores: list[np.ndarray] = []
         times: list[np.ndarray] = []
         events: list[np.ndarray] = []
+        mcdo_risk_scores: list[np.ndarray] = []
         
 
     elif model.task == "classification":
         probabilities: list[np.ndarray] = []
         predictions: list[np.ndarray] = []
         targets: list[np.ndarray] = []
+        mcdo_probabilities: list[np.ndarray] = []
 
     elif model.task == "regression":
-        predictions = []
-        targets = []
+        predictions: list[np.ndarray] = []
+        targets: list[np.ndarray] = []
+        mcdo_predictions: list[np.ndarray] = []
 
     else:
         raise ValueError(f"Unsupported task: {model.task}")
@@ -438,7 +444,7 @@ def test(
                 batch_result["case_id"],
             )
 
-            stratas.append(np.asarray(batch_result["strata"]))
+            stratas.append(np.asarray(batch_result["strata"]).reshape(-1))
 
             mcdo_variability.append(np.asarray(batch_result["mcdo_std"]))
 
@@ -447,18 +453,30 @@ def test(
                 times.append(to_numpy(batch["time"]).reshape(-1))
                 events.append(to_numpy(batch["event"]).reshape(-1))
 
+                # (B x Nmcdo)
+                mcdo_risk_scores.append(np.asarray(batch_result["mcdo_risk_scores"]))
+
             elif model.task == "classification":
                 probabilities.append(np.asarray(batch_result["proba"]))
                 predictions.append(np.asarray(batch_result["prediction"]).reshape(-1))
                 targets.append(to_numpy(batch["target"]).reshape(-1))
 
+                # (B x Nclass x Nmcdo)
+                mcdo_probabilities.append(np.asarray(batch_result["mcdo_probas"]))
+
             else:
                 predictions.append(np.asarray(batch_result["prediction"]))
                 targets.append(to_numpy(batch["target"]))
 
+                # (B x Ntarget x Nmcdo)
+                mcdo_predictions.append(np.asarray(batch_result["mcdo_predictions"]))
+
     result: dict[str, Any] = {
         "case_id": case_ids,
-        "strata": stratas,
+        "strata": np.concatenate(
+            stratas,
+            axis=0,
+        ),
         "mcdo_std": np.concatenate(
             mcdo_variability,
             axis=0,
@@ -473,6 +491,10 @@ def test(
                     risk_scores,
                     axis=0,
                 ),
+                "mcdo_risk_scores": np.concatenate(
+                    mcdo_risk_scores,
+                    axis=0,
+                ),
                 "time": np.concatenate(
                     times,
                     axis=0,
@@ -481,6 +503,7 @@ def test(
                     events,
                     axis=0,
                 ),
+
             }
         )
 
@@ -489,6 +512,10 @@ def test(
             {
                 "proba": np.concatenate(
                     probabilities,
+                    axis=0,
+                ),
+                "mcdo_probas": np.concatenate(
+                    mcdo_probabilities,
                     axis=0,
                 ),
                 "prediction": np.concatenate(
@@ -508,6 +535,10 @@ def test(
             {
                 "prediction": np.concatenate(
                     predictions,
+                    axis=0,
+                ),
+                "mcdo_predictions": np.concatenate(
+                    mcdo_predictions,
                     axis=0,
                 ),
                 "target": np.concatenate(
@@ -704,5 +735,160 @@ def results_to_dataframe(
 
         else:
             raise ValueError(f"Unsupported task: {task}")
+
+    return pd.DataFrame(rows)
+
+
+def mcdo_prediction_to_dataframe(
+    results: list[dict[str, Any]],
+    task: str,
+    target_names: list[str] | None = None,
+) -> pd.DataFrame:
+    """
+    Convert Monte Carlo dropout predictions into a long-format DataFrame.
+
+    Each MCDO pass of each case becomes one row, identified by
+    ``mcdo_pass``. This layout is suited to stability analyses
+    (per-case spread, rank stability, pass-wise metrics).
+
+    Parameters
+    ----------
+    results
+        List of result dictionaries returned by ``test``. Each must contain
+        the task-specific MCDO array:
+        ``mcdo_risk_scores`` (B x Nmcdo) for survival,
+        ``mcdo_probas`` (B x Nclass x Nmcdo) for classification,
+        ``mcdo_predictions`` (B x Ntarget x Nmcdo) for regression.
+
+    task
+        Prediction task. One of:
+        ``"survival"``, ``"classification"``, or ``"regression"``.
+
+    target_names
+        Optional names for regression targets. If omitted, generic names
+        ``target_0``, ``target_1``, ... are used.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per (case, MCDO pass). Columns are the case identifiers
+        (``case_id``, ``strata``, ``test``, ``repeat``), the ground truth,
+        ``mcdo_pass``, then the pass-wise prediction(s).
+
+    Raises
+    ------
+    KeyError
+        If a result does not contain the MCDO array for `task`.
+    ValueError
+        If `task` is unsupported or `target_names` does not match the
+        number of regression outputs.
+    """
+    mcdo_keys = {
+        "survival": "mcdo_risk_scores",
+        "classification": "mcdo_probas",
+        "regression": "mcdo_predictions",
+    }
+
+    if task not in mcdo_keys:
+        raise ValueError(
+            f"Unsupported `task`: {task}. Expected one of {sorted(mcdo_keys)}."
+        )
+
+    mcdo_key = mcdo_keys[task]
+    rows = []
+
+    for result in results:
+        if mcdo_key not in result:
+            raise KeyError(
+                f"`{mcdo_key}` is missing from the {task} result. "
+                "Run `test` to produce MCDO predictions."
+            )
+
+        case_ids = result["case_id"]
+        stratas = result["strata"]
+        test_fold = result.get("test")
+        repeat = result.get("repeat")
+
+        mcdo_outputs = np.asarray(result[mcdo_key])
+
+        # Always work on (B x Noutput x Nmcdo)
+        if mcdo_outputs.ndim == 2:
+            mcdo_outputs = mcdo_outputs[:, None, :]
+
+        n_outputs = mcdo_outputs.shape[1]
+        n_passes = mcdo_outputs.shape[2]
+
+        if task == "survival":
+            times = np.asarray(result["time"]).reshape(-1)
+            events = np.asarray(result["event"]).reshape(-1)
+
+        elif task == "classification":
+            targets = np.asarray(result["target"]).reshape(-1)
+            label_encoder = result.get("label_encoder")
+
+            if label_encoder is not None:
+                true_classes = label_encoder.inverse_transform(targets.astype(int))
+            else:
+                true_classes = targets
+
+        else:
+            targets = np.asarray(result["target"])
+
+            if targets.ndim == 1:
+                targets = targets[:, None]
+
+            if target_names is None:
+                names = [f"target_{index}" for index in range(n_outputs)]
+            else:
+                if len(target_names) != n_outputs:
+                    raise ValueError(
+                        f"Received {len(target_names)} target names for "
+                        f"{n_outputs} regression outputs."
+                    )
+
+                names = target_names
+
+        for index, case_id in enumerate(case_ids):
+            case_row = {
+                "case_id": case_id,
+                "strata": stratas[index],
+                "test": test_fold,
+            }
+
+            if repeat is not None:
+                case_row["repeat"] = repeat
+
+            if task == "survival":
+                case_row["time"] = times[index]
+                case_row["event"] = events[index]
+
+            elif task == "classification":
+                case_row["target"] = targets[index]
+                case_row["target_class"] = true_classes[index]
+
+            else:
+                for target_index, target_name in enumerate(names):
+                    case_row[target_name] = targets[index, target_index]
+
+            for mcdo_pass in range(n_passes):
+                row = dict(case_row)
+                row["mcdo_pass"] = mcdo_pass
+
+                if task == "survival":
+                    row["risk_score"] = mcdo_outputs[index, 0, mcdo_pass]
+
+                elif task == "classification":
+                    for class_index in range(n_outputs):
+                        row[f"proba_class_{class_index}"] = mcdo_outputs[
+                            index, class_index, mcdo_pass
+                        ]
+
+                else:
+                    for target_index, target_name in enumerate(names):
+                        row[f"{target_name}_pred"] = mcdo_outputs[
+                            index, target_index, mcdo_pass
+                        ]
+
+                rows.append(row)
 
     return pd.DataFrame(rows)
