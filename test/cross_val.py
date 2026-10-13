@@ -48,6 +48,7 @@ from MIL.test import (
     compute_test_metrics,
     ensemble_results,
     results_to_dataframe,
+    mcdo_prediction_to_dataframe,
 )
 from MIL.utils import load_model
 from MIL.dataloader import DatasetHandler
@@ -559,7 +560,7 @@ def test_cross_validation(
 
     best_in_root = copy_best_to_root(job_dir, models_params)
 
-    # test with seleceted best models
+    # test with selected best models
     test_results = []
     test_metrics = []
     ensemble_test_results = []
@@ -588,7 +589,7 @@ def test_cross_validation(
                     m,
                     test_loader,
                     mcdo_passes=1,
-                )
+                )  # Add argument to control MCDO
 
             except Exception:
                 LOGGER.exception(
@@ -650,6 +651,13 @@ def test_cross_validation(
         target_names=getattr(m.args, "target_name", None),
     )
 
+
+    mcdo_individual_predictions_df = mcdo_prediction_to_dataframe(
+        results=test_results,
+        task=fold_task,
+        target_names=getattr(m.args, "target_name", None),
+    )
+
     ensemble_results_df = results_to_dataframe(
         results=ensemble_test_results,
         task=fold_task,
@@ -658,6 +666,11 @@ def test_cross_validation(
 
     individual_results_df.to_csv(
         Path(job_dir) / "all_test_results.csv",
+        index=False,
+    )
+
+    mcdo_individual_predictions_df.to_csv(
+        Path(job_dir) / "all_mcdo_predictions.csv",
         index=False,
     )
 
