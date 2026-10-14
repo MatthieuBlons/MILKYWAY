@@ -453,7 +453,7 @@ class WSIEncoded(Dataset):
         sample : ndarray
             matrix of the stacked selected tiles.
 
-        indices : torch.tensor, size (n_samples,), selected tiles' ID.
+        indices : ndarray, size (n_samples,), selected tiles' ID.
         """
         if self.sampling_mode == "train":
             train_sampler = EncodingSampler(
@@ -462,14 +462,20 @@ class WSIEncoded(Dataset):
                 n_samples=self.args.n_tiles,
             )
             indices = train_sampler.sampler()
-            sample = mat[indices, :]
         else:
             test_sampler = EncodingSampler(
                 sampler_name="all",
                 feat_path=path,
             )
             indices = test_sampler.sampler()
-            sample = mat[indices, :]
+
+        # A one-element torch tensor is read by numpy as a scalar index
+        # (via __index__), which drops the tile axis for single-tile WSIs.
+        indices = np.asarray(
+            indices,
+            dtype=np.int64,
+        ).reshape(-1)
+        sample = mat[indices, :]
         return sample, indices
 
     def _make_db(
