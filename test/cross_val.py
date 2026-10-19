@@ -125,6 +125,12 @@ def build_job_parser() -> ArgumentParser:
         default=1,
         help="Number of models to ensemble per fold.",
     )
+    parser.add_argument(
+        "--n_mcdo",
+        type=int,
+        default=1,
+        help="Number of Monte Carlo Dropout passes during test.",
+    )
 
     # Configuration and outputs
 
@@ -188,6 +194,7 @@ def build_job_parser() -> ArgumentParser:
 
 def parse_job_arguments(
     known_args: list[str] | None = None,
+    parser: ArgumentParser | None = None,
 ) -> Namespace:
     """
     Parse and validate cross-validation launcher arguments.
@@ -198,12 +205,18 @@ def parse_job_arguments(
         Explicit argument sequence. When None, use command-line
         arguments.
 
+    parser : argparse.ArgumentParser, optional
+        Launcher parser extending `build_job_parser`. When None, use
+        `build_job_parser()`.
+
     Returns
     -------
     argparse.Namespace
         Validated launcher configuration.
     """
-    parser = build_job_parser()
+    if parser is None:
+        parser = build_job_parser()
+
     args = parser.parse_args(known_args)
 
     if args.n_folds < 2:
@@ -286,7 +299,7 @@ def resolve_job_name(job_name: str | None) -> str:
     date_tag = datetime.now().strftime("%Y-%m-%d_%H%M%S")
 
     if job_name is None:
-        return f"ProteONET_CV_{date_tag}"
+        return f"MIL_CV_{date_tag}"
 
     return f"{job_name}_{date_tag}"
 
@@ -352,6 +365,7 @@ def build_training_arguments(
     run_dir: Path,
     fold: int,
     repetition: int,
+    overrides: list[str] | None = None,
 ) -> list[str]:
     """
     Build command-line arguments for one training run.
@@ -372,8 +386,13 @@ def build_training_arguments(
     fold : int
         Zero-based test-fold index.
 
-    rep : int
+    repetition : int
         Zero-based repetition index.
+
+    overrides : list of str, optional
+        Extra command-line arguments appended last, for example the
+        hyperparameters of one grid-search configuration. 
+        Takes priority over --config.
 
     Returns
     -------
@@ -406,6 +425,7 @@ def build_training_arguments(
         "--seed",
         str(training_seed),
         "--write_config",
+        *(overrides or []),
     ]
 
 
@@ -528,6 +548,7 @@ def train_cross_validation(
 def test_cross_validation(
     job_dir: str,
     n_best: int = 1,
+    n_mcdo: int = 1,
 ) -> None:
 
     model_list = list(Path(job_dir).rglob("*best_*.pt.tar"))
@@ -573,7 +594,7 @@ def test_cross_validation(
         for repeat, model_path in repeats.items():
             model_tag = {"test": test_fold, "repeat": repeat}
             try:
-                m = load_model(model_path)
+                m = load_model(model_path, dropout=n_mcdo > 1)
                 m.network.print_summary()
 
                 m_dataset = DatasetHandler(
@@ -588,8 +609,8 @@ def test_cross_validation(
                 model_results = test(
                     m,
                     test_loader,
-                    mcdo_passes=1,
-                )  # Add argument to control MCDO
+                    mcdo_passes=n_mcdo,
+                )
 
             except Exception:
                 LOGGER.exception(
@@ -650,7 +671,6 @@ def test_cross_validation(
         task=fold_task,
         target_names=getattr(m.args, "target_name", None),
     )
-
 
     mcdo_individual_predictions_df = mcdo_prediction_to_dataframe(
         results=test_results,
@@ -725,7 +745,7 @@ def main(
     LOGGER.info("Cross-validation training completed successfully.")
 
     try:
-        test_cross_validation(job_dir, n_best=args.n_ensemble)
+        test_cross_validation(job_dir, n_best=args.n_ensemble, n_mcdo=args.n_mcdo)
 
     finally:
         LOGGER.info(f"Cross-validation results saved in: {job_dir}.")
