@@ -1,0 +1,16 @@
+# -------------------------------------------------
+# Grid-search space 
+# -------------------------------------------------
+
+lr: [1.0e-3, 5.0e-4, 1.0e-4, 5.0e-5]
+
+lr_scheduler: [cosine, plateau]
+
+instance_transf:
+  - {instance_transf: identity, instance_dim: 0}
+  - {instance_transf: linear, instance_dim: 0} # encoder_dim -> encoder_dim
+
+width_fe:
+  - [512, 256, 128]
+  - [512, 256] # less compression
+  - [256, 128] # smaller but shallower
