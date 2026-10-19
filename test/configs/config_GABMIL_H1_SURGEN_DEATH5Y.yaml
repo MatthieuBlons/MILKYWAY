@@ -1,0 +1,74 @@
+# -------------------------------------------------
+# Input
+# -------------------------------------------------
+
+enc_dir: /cluster/CBIO/data1/mblons/orion/data/SURGEN/TILE_SIGNATURE/full_dataset/tile_feat_20x_224px_0px_overlap/features_hoptimus1
+encoder: hoptimus1
+
+# -------------------------------------------------
+# Sampling
+# -------------------------------------------------
+wsi_format: h5
+feature_dim: 0
+n_tiles: 1024
+sampling_strat: random
+sample_wr_whole_label: True
+no_strat_sampling: False
+
+
+# -------------------------------------------------
+# Target
+# -------------------------------------------------
+
+task: classification
+target_path: /cluster/CBIO/data1/mblons/orion/data/SURGEN/clinical/target/D_DEATH5Y/SR386_target_D_DEATH5Y_split_2026_05_29.csv
+id_name: ID
+target_name: D_DEATH5Y
+stratif_name: stratif
+fold_name: test
+n_classes: 2
+
+# -------------------------------------------------
+# Runtime
+# -------------------------------------------------
+
+num_workers: 0
+
+# -------------------------------------------------
+# Validation
+# -------------------------------------------------
+
+use_val: true
+ref_metric: roc_auc
+metric_mode: max
+val_fraction: 0.2
+
+# -------------------------------------------------
+# Optimization
+# -------------------------------------------------
+
+criterion: cross_entropy
+optimizer: adamw
+lr: 1.0e-4
+weight_decay: 1.0e-5
+lr_scheduler: cosine
+restart_period: 10
+restart_multiplier: 2
+lr_warm_up: 5
+epochs: 20
+patience: 5
+minimum_epochs: 10
+batch_size: 1
+
+# -------------------------------------------------
+# Architecture
+# -------------------------------------------------
+model: abmil
+instance_transf: linear
+instance_dim: 512
+pooling: gated_attention
+attention_dim: 384
+num_heads: 1
+width_fe: null
+dropout: 0.25
+
