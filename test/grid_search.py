@@ -17,16 +17,32 @@ cartesian product of all axes.
 - A mapping value overrides several arguments together (coupled
   parameters). The axis name is then only a label.
 
+Stages
+------
+`--stage all` (default) runs everything sequentially in one process. The
+other stages split the work so that an external scheduler (GNU Parallel, see
+`grid_search_parallel.sh`) can spread it over several GPUs:
+
+- `prepare`: create `--job_dir`, the grid and the run list `runs.tsv`.
+- `train`: train one run, selected by `--config_id`, `--fold`, `--repeat`.
+  Exits with an error if training fails.
+- `test`: test one configuration (`--config_id`), or all of them.
+- `summary`: write `grid_summary.csv` and `incomplete_runs.csv`.
+
+Every stage checks that `--config` and `--search_space` still match the
+copies stored in the job directory.
+
 Outputs
 -------
 ::
 
-    output_dir/<job>_<date>/
+    output_dir/<job>_<date>/    or --job_dir
         base_config.yaml        copy of --config
         search_space.yaml       copy of --search_space
         grid.yaml, grid.csv     config_id -> overrides
+        runs.tsv                config_id, fold, repeat of every run
         cfg_<i>/test_<f>/rep_<r>/   one cross-validation per configuration
-        failed_runs.csv         runs that raised during training, if any
+        incomplete_runs.csv     runs without a completion marker, if any
         grid_summary.csv        validation and test metrics per configuration
 
 Configurations are ranked on the mean validation reference metric over
@@ -88,13 +104,15 @@ RESERVED_ARGUMENTS = {
 
 COMPLETED_MARKER = ".completed"
 
+STAGES = ["all", "prepare", "train", "test", "summary"]
+
 
 def build_grid_parser() -> ArgumentParser:
     """
     Build the grid-search launcher argument parser.
 
-    Extends the cross-validation parser with the search space, resume and
-    dry-run options.
+    Extends the cross-validation parser with the search space, job
+    directory, stage and dry-run options.
 
     Returns
     -------
@@ -114,13 +132,46 @@ def build_grid_parser() -> ArgumentParser:
         help="YAML search space. See the module docstring for the format.",
     )
     parser.add_argument(
+        "--job_dir",
         "--resume_dir",
+        dest="job_dir",
         type=Path,
         default=None,
         help=(
-            "Existing grid-search directory to resume. Completed runs are "
-            "skipped. The base config and search space must be unchanged."
+            "Exact grid-search directory. Created if missing; otherwise "
+            "resumed, skipping completed runs, provided the base config and "
+            "search space are unchanged. Defaults to a date-stamped "
+            "directory in --output_dir. Required by the train, test and "
+            "summary stages."
         ),
+    )
+    parser.add_argument(
+        "--stage",
+        type=str,
+        choices=STAGES,
+        default="all",
+        help="Part of the grid search to run. See the module docstring.",
+    )
+    parser.add_argument(
+        "--config_id",
+        type=str,
+        default=None,
+        help=(
+            "Configuration to train (required by --stage train) or to test "
+            "(--stage test; all configurations when omitted), e.g. cfg_007."
+        ),
+    )
+    parser.add_argument(
+        "--fold",
+        type=int,
+        default=None,
+        help="Zero-based test fold of the run trained by --stage train.",
+    )
+    parser.add_argument(
+        "--repeat",
+        type=int,
+        default=None,
+        help="Zero-based repetition of the run trained by --stage train.",
     )
     parser.add_argument(
         "--dry_run",
@@ -157,8 +208,18 @@ def parse_grid_arguments(
     if not args.search_space.is_file():
         parser.error(f"Search space file does not exist: {args.search_space}")
 
-    if args.resume_dir is not None and not args.resume_dir.is_dir():
-        parser.error(f"`resume_dir` does not exist: {args.resume_dir}")
+    if args.stage in {"train", "test", "summary"} and args.job_dir is None:
+        parser.error(f"--stage {args.stage} requires --job_dir.")
+
+    if args.stage == "train":
+        if args.config_id is None or args.fold is None or args.repeat is None:
+            parser.error("--stage train requires --config_id, --fold and --repeat.")
+
+        if not 0 <= args.fold < args.n_folds:
+            parser.error(f"--fold must be in [0, {args.n_folds - 1}].")
+
+        if not 0 <= args.repeat < args.n_repeats:
+            parser.error(f"--repeat must be in [0, {args.n_repeats - 1}].")
 
     return args
 
@@ -387,16 +448,12 @@ def grid_to_dataframe(
     return pd.DataFrame(rows)
 
 
-def prepare_job_directory(
+def build_run_list(
     args: Namespace,
     grid: list[dict[str, Any]],
-) -> tuple[Path, str]:
+) -> list[tuple[str, int, int]]:
     """
-    Create a new grid-search directory, or check a resumed one.
-
-    A new directory receives copies of the base config and the search
-    space, and the expanded grid. A resumed directory must hold the same
-    base config and grid.
+    List every run of the grid search.
 
     Parameters
     ----------
@@ -408,18 +465,62 @@ def prepare_job_directory(
 
     Returns
     -------
+    list of tuple of (str, int, int)
+        Configuration identifier, test fold and repetition of each run,
+        configuration-major.
+    """
+    return [
+        (build_config_id(index), fold, repetition)
+        for index in range(len(grid))
+        for fold in range(args.n_folds)
+        for repetition in range(args.n_repeats)
+    ]
+
+
+def prepare_job_directory(
+    args: Namespace,
+    grid: list[dict[str, Any]],
+    create: bool = True,
+) -> tuple[Path, str]:
+    """
+    Create a new grid-search directory, or check an existing one.
+
+    A new directory receives copies of the base config and the search
+    space, the expanded grid and the run list. An existing directory must
+    hold the same base config and grid.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Grid-search launcher configuration.
+
+    grid : list of dict
+        Expanded grid.
+
+    create : bool, default=True
+        Create the directory when it does not hold a grid yet. When False,
+        a missing grid is an error.
+
+    Returns
+    -------
     tuple of (pathlib.Path, str)
         Job directory and job name.
 
     Raises
     ------
+    FileNotFoundError
+        If `create` is False and the directory holds no grid.
+
     ValueError
-        If a resumed directory was created with another base config or
+        If an existing directory was created with another base config or
         grid.
     """
-    if args.resume_dir is not None:
-        job_dir = args.resume_dir.expanduser().resolve()
+    if args.job_dir is not None:
+        job_dir = args.job_dir.expanduser().resolve()
+    else:
+        job_dir = args.output_dir.expanduser().resolve() / resolve_job_name(args.job)
 
+    if (job_dir / "grid.yaml").is_file():
         stored_config = load_yaml_config(job_dir / "base_config.yaml")
         stored_grid = load_yaml_config(job_dir / "grid.yaml")["grid"]
 
@@ -434,12 +535,15 @@ def prepare_job_directory(
                 f"in {job_dir}."
             )
 
-        LOGGER.info("Resuming grid search in: %s", job_dir)
+        LOGGER.info("Using existing grid-search directory: %s", job_dir)
 
         return job_dir, job_dir.name
 
-    job_name = resolve_job_name(args.job)
-    job_dir = args.output_dir.expanduser().resolve() / job_name
+    if not create:
+        raise FileNotFoundError(
+            f"No grid in `job_dir` {job_dir}. Run --stage prepare first."
+        )
+
     job_dir.mkdir(
         parents=True,
         exist_ok=True,
@@ -461,7 +565,154 @@ def prepare_job_directory(
         index=False,
     )
 
-    return job_dir, job_name
+    pd.DataFrame(build_run_list(args, grid)).to_csv(
+        job_dir / "runs.tsv",
+        sep="\t",
+        header=False,
+        index=False,
+    )
+
+    LOGGER.info("Created grid-search directory: %s", job_dir)
+
+    return job_dir, job_dir.name
+
+
+def train_run(
+    args: Namespace,
+    device: str,
+    job_dir: Path,
+    job_name: str,
+    config_id: str,
+    cli_arguments: list[str],
+    fold: int,
+    repetition: int,
+) -> bool:
+    """
+    Train one (configuration, fold, repetition) run.
+
+    The run is skipped if it holds a completion marker. The marker is
+    written once training returns.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Grid-search launcher configuration.
+
+    device : str
+        Resolved PyTorch device.
+
+    job_dir : pathlib.Path
+        Grid-search directory.
+
+    job_name : str
+        Grid-search name, used as W&B group prefix.
+
+    config_id : str
+        Configuration identifier.
+
+    cli_arguments : list of str
+        Command-line overrides of the configuration.
+
+    fold : int
+        Zero-based test-fold index.
+
+    repetition : int
+        Zero-based repetition index.
+
+    Returns
+    -------
+    bool
+        True if the run was trained, False if it was already completed.
+    """
+    run_dir = build_run_directory(
+        job_dir=job_dir / config_id,
+        fold=fold,
+        repetition=repetition,
+    )
+
+    if (run_dir / COMPLETED_MARKER).is_file():
+        LOGGER.info(
+            "Skipping completed run | config=%s | fold=%d | repeat=%d",
+            config_id,
+            fold,
+            repetition,
+        )
+        return False
+
+    LOGGER.info(
+        "Starting run | config=%s | fold=%d | repeat=%d | %s",
+        config_id,
+        fold,
+        repetition,
+        " ".join(cli_arguments),
+    )
+
+    training_args = build_training_arguments(
+        args=args,
+        device=device,
+        run_dir=run_dir,
+        fold=fold,
+        repetition=repetition,
+        overrides=cli_arguments,
+    )
+
+    stop_epoch = train_single_run(
+        project_name=args.project,
+        job_name=f"{job_name}_{config_id}",
+        known_args=training_args,
+        verbose=args.verbose,
+        log=args.log,
+    )
+
+    (run_dir / COMPLETED_MARKER).touch()
+
+    LOGGER.info(
+        "Completed run | config=%s | fold=%d | repeat=%d | epochs=%d",
+        config_id,
+        fold,
+        repetition,
+        stop_epoch,
+    )
+
+    return True
+
+
+def test_configuration(
+    args: Namespace,
+    job_dir: Path,
+    config_id: str,
+) -> None:
+    """
+    Test the best models of one configuration on their held-out folds.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Grid-search launcher configuration.
+
+    job_dir : pathlib.Path
+        Grid-search directory.
+
+    config_id : str
+        Configuration identifier.
+    """
+    config_dir = job_dir / config_id
+    n_runs = args.n_folds * args.n_repeats
+    n_completed = len(list(config_dir.glob(f"test_*/rep_*/{COMPLETED_MARKER}")))
+
+    if n_completed < n_runs:
+        LOGGER.warning(
+            "Testing %s with %d/%d completed runs.",
+            config_id,
+            n_completed,
+            n_runs,
+        )
+
+    test_cross_validation(
+        config_dir,
+        n_best=args.n_ensemble,
+        n_mcdo=args.n_mcdo,
+    )
 
 
 def run_grid_search(
@@ -472,12 +723,13 @@ def run_grid_search(
     job_name: str,
 ) -> None:
     """
-    Train and test every configuration of the grid.
+    Train and test every configuration of the grid, sequentially.
 
     Each configuration is tested as soon as all its runs are trained.
-    Runs holding a completion marker are skipped. A configuration is
-    tested again only if one of its runs was trained in this session or
-    its test results are missing.
+    Runs holding a completion marker are skipped. A failed run is logged
+    and the search continues. A configuration is tested again only if one
+    of its runs was trained in this session or its test results are
+    missing.
 
     Parameters
     ----------
@@ -508,8 +760,6 @@ def run_grid_search(
     LOGGER.info("Device: %s", device)
     LOGGER.info("Output directory: %s", job_dir)
 
-    failed_runs = []
-
     progress = tqdm(
         total=len(grid) * args.n_folds * args.n_repeats,
         desc="Grid search",
@@ -538,71 +788,27 @@ def run_grid_search(
                 refresh=False,
             )
 
-            run_dir = build_run_directory(
-                job_dir=config_dir,
-                fold=fold,
-                repetition=repetition,
-            )
-
-            if (run_dir / COMPLETED_MARKER).is_file():
-                LOGGER.info(
-                    "Skipping completed run | config=%s | fold=%d | repeat=%d",
-                    config_id,
-                    fold,
-                    repetition,
-                )
-                continue
-
-            training_args = build_training_arguments(
-                args=args,
-                device=device,
-                run_dir=run_dir,
-                fold=fold,
-                repetition=repetition,
-                overrides=cli_arguments,
-            )
-
             try:
-                stop_epoch = train_single_run(
-                    project_name=args.project,
-                    job_name=f"{job_name}_{config_id}",
-                    known_args=training_args,
-                    verbose=args.verbose,
-                    log=args.log,
+                trained_runs += train_run(
+                    args=args,
+                    device=device,
+                    job_dir=job_dir,
+                    job_name=job_name,
+                    config_id=config_id,
+                    cli_arguments=cli_arguments,
+                    fold=fold,
+                    repetition=repetition,
                 )
 
             except (Exception, SystemExit):
                 # get_arguments reports invalid configurations with
                 # parser.error, which raises SystemExit.
                 LOGGER.exception(
-                    "Training failed | config=%s | fold=%d | repeat=%d | run_dir=%s",
+                    "Training failed | config=%s | fold=%d | repeat=%d",
                     config_id,
                     fold,
                     repetition,
-                    run_dir,
                 )
-                failed_runs.append(
-                    {
-                        "config_id": config_id,
-                        "test": fold,
-                        "repeat": repetition,
-                        "run_dir": str(run_dir),
-                    }
-                )
-                continue
-
-            (run_dir / COMPLETED_MARKER).touch()
-            trained_runs += 1
-
-            LOGGER.info(
-                "Completed run | config=%s | fold=%d/%d | repeat=%d/%d | epochs=%d",
-                config_id,
-                fold + 1,
-                args.n_folds,
-                repetition + 1,
-                args.n_repeats,
-                stop_epoch,
-            )
 
         already_tested = (config_dir / "ensemble_metrics.csv").is_file()
 
@@ -610,10 +816,10 @@ def run_grid_search(
             continue
 
         try:
-            test_cross_validation(
-                config_dir,
-                n_best=args.n_ensemble,
-                n_mcdo=args.n_mcdo,
+            test_configuration(
+                args=args,
+                job_dir=job_dir,
+                config_id=config_id,
             )
 
         except Exception:
@@ -621,16 +827,67 @@ def run_grid_search(
 
     progress.close()
 
-    if failed_runs:
-        pd.DataFrame(failed_runs).to_csv(
-            job_dir / "failed_runs.csv",
-            index=False,
-        )
-        LOGGER.warning(
-            "%d run(s) failed. See %s",
-            len(failed_runs),
-            job_dir / "failed_runs.csv",
-        )
+
+def report_incomplete_runs(
+    args: Namespace,
+    grid: list[dict[str, Any]],
+    job_dir: Path,
+) -> list[tuple[str, int, int]]:
+    """
+    List the runs that have no completion marker.
+
+    Covers runs that failed, were interrupted or never started. Written to
+    `job_dir/incomplete_runs.csv` when any; a stale file is removed
+    otherwise.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Grid-search launcher configuration.
+
+    grid : list of dict
+        Expanded grid.
+
+    job_dir : pathlib.Path
+        Grid-search directory.
+
+    Returns
+    -------
+    list of tuple of (str, int, int)
+        Configuration identifier, test fold and repetition of each
+        incomplete run.
+    """
+    incomplete_runs = [
+        (config_id, fold, repetition)
+        for config_id, fold, repetition in build_run_list(args, grid)
+        if not (
+            job_dir
+            / config_id
+            / f"test_{fold}"
+            / f"rep_{repetition}"
+            / COMPLETED_MARKER
+        ).is_file()
+    ]
+    report_path = job_dir / "incomplete_runs.csv"
+
+    if not incomplete_runs:
+        report_path.unlink(missing_ok=True)
+        return incomplete_runs
+
+    pd.DataFrame(
+        incomplete_runs,
+        columns=["config_id", "test", "repeat"],
+    ).to_csv(
+        report_path,
+        index=False,
+    )
+    LOGGER.warning(
+        "%d run(s) did not complete. See %s",
+        len(incomplete_runs),
+        report_path,
+    )
+
+    return incomplete_runs
 
 
 def summarize_configuration(
@@ -761,7 +1018,7 @@ def main(
     known_args: list[str] | None = None,
 ) -> None:
     """
-    Run a grid search of repeated cross-validations.
+    Run a grid search of repeated cross-validations, or one of its stages.
 
     Parameters
     ----------
@@ -795,7 +1052,48 @@ def main(
 
         return
 
-    job_dir, job_name = prepare_job_directory(args, grid)
+    job_dir, job_name = prepare_job_directory(
+        args,
+        grid,
+        create=args.stage in {"all", "prepare"},
+    )
+    config_ids = [build_config_id(index) for index in range(len(grid))]
+
+    if args.config_id is not None and args.config_id not in config_ids:
+        raise ValueError(
+            f"Unknown `config_id` {args.config_id}. Expected one of "
+            f"{config_ids[0]} ... {config_ids[-1]}."
+        )
+
+    if args.stage == "prepare":
+        return
+
+    if args.stage == "train":
+        train_run(
+            args=args,
+            device=resolve_device(args),
+            job_dir=job_dir,
+            job_name=job_name,
+            config_id=args.config_id,
+            cli_arguments=grid_cli_arguments[config_ids.index(args.config_id)],
+            fold=args.fold,
+            repetition=args.repeat,
+        )
+        return
+
+    if args.stage == "test":
+        for config_id in [args.config_id] if args.config_id else config_ids:
+            test_configuration(
+                args=args,
+                job_dir=job_dir,
+                config_id=config_id,
+            )
+        return
+
+    if args.stage == "summary":
+        report_incomplete_runs(args, grid, job_dir)
+        summarize_grid_search(job_dir, grid)
+        return
 
     timer = timetracker(
         name="MIL grid search",
@@ -814,6 +1112,7 @@ def main(
     finally:
         timer.toc()
 
+    report_incomplete_runs(args, grid, job_dir)
     summarize_grid_search(job_dir, grid)
 
     LOGGER.info("Grid-search results saved in: %s", job_dir)
