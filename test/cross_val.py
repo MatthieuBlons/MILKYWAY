@@ -594,7 +594,7 @@ def test_cross_validation(
         for repeat, model_path in repeats.items():
             model_tag = {"test": test_fold, "repeat": repeat}
             try:
-                m = load_model(model_path, dropout=n_mcdo > 1)
+                m = load_model(model_path)
                 m.network.print_summary()
 
                 m_dataset = DatasetHandler(

@@ -117,7 +117,6 @@ def load_model(
     weights_only: bool = False,
     map_location: str = "cpu",
     with_data: bool = False,
-    dropout: bool = False,
 ):
     """
     Loads and prepare a trained model for prediction.
@@ -140,8 +139,7 @@ def load_model(
     )
 
     model.network.load_state_dict(checkpoint["model_state_dict"])
-
-    enable_mc_dropout(model.network, enabled=dropout)
+    model.network.eval()
 
     return model
 

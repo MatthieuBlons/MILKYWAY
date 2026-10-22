@@ -375,8 +375,12 @@ class DeepMIL(BaseModel):
     def forward_without_gradients(self, tiles: Tensor, coords: Tensor | None) -> Tensor:
         """
         Perform inference without storing gradients.
+
+        The network is switched to eval mode only if it is in training mode,
+        so dropout layers enabled by `enable_mc_dropout` stay active.
         """
-        self.network.eval()
+        if self.network.training:
+            self.network.eval()
 
         with torch.inference_mode():
             return self.forward(tiles, coords)
@@ -430,8 +434,12 @@ class DeepMIL(BaseModel):
     def forward_batch_without_gradients(self, batch: dict[str, Any]) -> Tensor:
         """
         Perform batch inference without storing gradients.
+
+        The network is switched to eval mode only if it is in training mode,
+        so dropout layers enabled by `enable_mc_dropout` stay active.
         """
-        self.network.eval()
+        if self.network.training:
+            self.network.eval()
 
         tiles = batch["tiles"]
         coords = batch["coords"]
