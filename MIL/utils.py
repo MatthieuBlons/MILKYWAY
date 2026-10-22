@@ -23,6 +23,14 @@ from sklearn.metrics import (
     auc,
 )
 
+DROPOUT_TORCH_TYPES = (
+    torch.nn.Dropout,
+    torch.nn.Dropout1d,
+    torch.nn.Dropout2d,
+    torch.nn.Dropout3d,
+    torch.nn.AlphaDropout,
+    torch.nn.FeatureAlphaDropout,
+)
 
 def to_numpy(value: Any) -> np.ndarray:
     """Convert a tensor or array-like object to a NumPy array."""
@@ -65,7 +73,7 @@ def enable_mc_dropout(
     try:
         if enabled:
             for m in network.modules():
-                if m.__class__.__name__.startswith("Dropout"):
+                if isinstance(m, DROPOUT_TORCH_TYPES) or "drop" in m.__class__.__name__.lower():
                     m.train()
         yield
 
