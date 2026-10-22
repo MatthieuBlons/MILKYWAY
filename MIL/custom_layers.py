@@ -213,6 +213,7 @@ class MultiHeadAttention(Module):
         self._init_weights()
 
         self.dropout = dropout
+        self.dropout_layer = Dropout(dropout)
 
     def _init_weights(self):
         """Xavier-uniform init for the weights, zeros for the biases."""
@@ -240,7 +241,7 @@ class MultiHeadAttention(Module):
         # Weights extraction
         x = F.linear(x, weight=self.atn_layer_1_weights, bias=self.atn_layer_1_bias)
         x = torch.tanh(x)
-        x = F.dropout(x, p=self.dropout, training=self.training)
+        x = self.dropout_layer(x)
         x = x.view((bs, nbt, self.n_heads, 1, self.head_dim))
         x = torch.matmul(x, self.atn_layer_2_weights) + self.atn_layer_2_bias  # scores.
         x = x.view(bs, nbt, -1)  # shape (bs, nbt, nheads)
@@ -302,6 +303,8 @@ class MultiHeadGatedAttention(Module):
         self._init_weights()
 
         self.dropout = dropout
+        # Module (not F.dropout) so that `enable_mc_dropout` can switch it on.
+        self.dropout_layer = Dropout(dropout)
 
     def _init_weights(self):
         """Xavier-uniform init for the weights, zeros for the biases."""
@@ -333,7 +336,7 @@ class MultiHeadGatedAttention(Module):
         u = F.linear(x, weight=self.U, bias=self.U_bias)
         u = torch.sigmoid(u)
         x = v * u
-        x = F.dropout(x, p=self.dropout, training=self.training)
+        x = self.dropout_layer(x)
         x = x.view((bs, nbt, self.n_heads, 1, self.head_dim))
         x = torch.matmul(x, self.W) + self.W_bias  # scores.
         x = x.view(bs, nbt, -1)  # shape (bs, nbt, nheads)
