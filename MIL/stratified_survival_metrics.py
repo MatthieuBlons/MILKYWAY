@@ -63,13 +63,16 @@ import numpy as np
 import pandas as pd
 from sksurv.exceptions import NoComparablePairException
 from sksurv.metrics import concordance_index_censored, cumulative_dynamic_auc
+from lifelines import CoxPHFitter
 
 __all__ = [
     "to_structured_survival_array",
-    "predicted_risk_at_times",
+    "predicted_risk_at_times_from_cph",
     "stratified_concordance_index",
     "cumulative_dynamic_auc_from_survival",
-    "evaluate_stratified_cox_model",
+    "fit_breslow_beta_fixed",
+    "fit_cph_from_risk_scores"
+    "predicted_risk_at_times_from_breslow_fit",
 ]
 
 
@@ -302,3 +305,143 @@ def cumulative_dynamic_auc_from_survival(
     return auc_at_times, mean_auc
 
 
+def fit_cph_from_risk_scores(
+    risk_scores: np.ndarray,
+    time: np.ndarray,
+    events: np.ndarray,
+    strata: np.ndarray | None,
+) -> CoxPHFitter:
+
+    df = pd.DataFrame(
+        {
+            "risk_score": risk_scores,
+            "time": time,
+            "event": events,
+        }
+    )  # no index -> could fect casa_id from results
+
+    strata_col = None
+    if strata is not None:
+        df["stratum"] = strata
+        strata_col = "stratum"
+
+    cph = CoxPHFitter()
+    cph.fit(
+        df,
+        duration_col="time",
+        event_col="event",
+        formula="risk_score",
+        strata=strata_col,
+    )
+    return cph
+
+
+def fit_breslow_beta_fixed(
+    risk_score: np.ndarray,
+    time: np.ndarray,
+    event: np.ndarray,
+    strata: np.ndarray | None = None,
+) -> dict:
+    """
+    Compute the Breslow cumulative baseline hazard with beta fixed to 1,
+    i.e. treating risk_scores directly as log-hazard ratios.
+
+    Returns a dict mapping stratum label -> (times, H0) arrays,
+    where H0[j] = cumulative baseline hazard at times[j].
+    """
+    df = pd.DataFrame(
+        {
+            "risk_score": risk_score,
+            "time": time,
+            "event": event,
+            "stratum": strata if strata is not None else 0,
+        }
+    )
+
+    result = {}
+    for stratum, grp in df.groupby("stratum"):
+        exp_scores = np.exp(grp["risk_score"].values)
+        t = grp["time"].values
+        e = grp["event"].values
+
+        event_times = np.sort(np.unique(t[e == 1]))
+        H0 = np.zeros(len(event_times))
+
+        for j, tj in enumerate(event_times):
+            risk_set = exp_scores[t >= tj]  # at-risk at time tj
+            events_j = e[t == tj].sum()  # events at time tj
+            H0[j] = events_j / risk_set.sum()  # Breslow increment
+
+        result[stratum] = (event_times, np.cumsum(H0))
+
+    return result
+
+
+def predicted_risk_at_times_from_breslow_fit(
+    breslow: dict,
+    risk_scores: pd.Series,
+    times: Sequence[float],
+    strata: pd.Series | None = None,
+) -> pd.DataFrame:
+    """
+    Compute 1 - S(t | risk_score) at requested times for each patient,
+    using a Breslow baseline fit with beta fixed to 1 (fit on risks).
+
+    Parameters
+    ----------
+    breslow : dict
+        Output of fit_breslow_beta_fixed(). Maps stratum label ->
+        (event_times, H0) where both are 1-D numpy arrays of the same
+        length, H0 cumulative.
+    risk_scores : pd.Series
+        Model risk scores. Index must be unique.
+    times : sequence of float
+        Evaluation times.
+    strata : pd.Series, optional
+        Stratum label per patient, aligned with risk_scores. Required if
+        breslow was fit with strata.
+
+    Returns
+    -------
+    pd.DataFrame
+        Shape (n_patients, n_times), index = risk_scores.index,
+        columns = times.
+    """
+    if not risk_scores.index.is_unique:
+        raise ValueError("risk_scores must have a unique index.")
+
+    times = np.asarray(times, dtype=float)
+    results = []
+
+    if strata is None:
+        strata = pd.Series("all", index=risk_scores.index)
+
+    for pid, r in risk_scores.items():
+        s = strata[pid]
+        event_times, H0 = breslow[s]
+
+        # Forward-fill H0 onto requested times:
+        # for each t, find the largest event_time <= t
+        idx = np.searchsorted(event_times, times, side="right") - 1
+
+        H0_at_times = np.where(
+            idx < 0,
+            0.0,  # t is before the first event time is H0 = 0
+            H0[idx],
+        )
+
+        sf = np.exp(-H0_at_times * np.exp(r))
+        results.append(1.0 - sf)
+
+    risk = pd.DataFrame(
+        results,
+        index=risk_scores.index,
+        columns=[str(f"risk_{int(time)}") for time in times],
+    )
+
+    if risk.isna().any().any():
+        raise ValueError(
+            "NaNs in predicted risk -- check that every patient's stratum "
+            "was seen during fit_breslow_beta_fixed()."
+        )
+    return risk
